@@ -45,9 +45,9 @@ def test_normalize_filters_zero_amount_and_uses_shallow_wbs(tmp_path: Path):
     out = load_workbook(output, data_only=True)
     ws_out = out["Breakdown"]
     assert ws_out.max_row == 2
-    assert ws_out["A2"].value == "2.1"
+    assert ws_out["A2"].value == "1.1"
     assert ws_out["D2"].value == "Breakdown"
-    assert ws_out["E2"].value == "งานคอนกรีต"
+    assert ws_out["E2"].value == "งานโครงสร้าง"
     assert ws_out["F2"].value in (None, "")
     assert ws_out["G2"].value in (None, "")
     assert ws_out["M2"].value == 25000

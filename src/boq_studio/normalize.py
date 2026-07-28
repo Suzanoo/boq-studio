@@ -156,6 +156,7 @@ def normalize_sheet(source_ws, output_ws, cfg: SheetConfig, progress: ProgressCa
     """
     result = SheetResult(sheet_name=cfg.sheet_name, status="OK")
     current_wbs2 = ""
+    current_parent_code = ""
     parent_counter = 0
     child_counter = 0
     max_row = source_ws.max_row
@@ -176,11 +177,15 @@ def normalize_sheet(source_ws, output_ws, cfg: SheetConfig, progress: ProgressCa
         if row_type in {"EMPTY", "TOTAL", "NOTE"}:
             result.skipped_rows += 1
         elif row_type == "WBS":
-            # Keep the latest detected heading as the single WBS-2 level.
-            current_wbs2 = description
-            parent_counter += 1
-            child_counter = 0
-            result.wbs_rows += 1
+            item_no = safe_text(source_ws.cell(source_row, cfg.item_no_col).value) if cfg.item_no_col else ""
+            # For MS-1.2, only a top-level numbered heading becomes WBS-2.
+            # Unnumbered continuation text must not replace the active heading.
+            if numbering_level(item_no) == 1:
+                current_wbs2 = description
+                current_parent_code = item_no
+                parent_counter += 1
+                child_counter = 0
+                result.wbs_rows += 1
             result.skipped_rows += 1
         else:
             amount = safe_number(source_ws.cell(source_row, cfg.amount_col).value) if cfg.amount_col else None
@@ -189,8 +194,10 @@ def normalize_sheet(source_ws, output_ws, cfg: SheetConfig, progress: ProgressCa
             else:
                 if parent_counter == 0:
                     parent_counter = 1
+                    current_parent_code = "1"
                 child_counter += 1
-                code = f"{parent_counter}.{child_counter}"
+                item_no = safe_text(source_ws.cell(source_row, cfg.item_no_col).value) if cfg.item_no_col else ""
+                code = item_no if (numbering_level(item_no) or 0) >= 2 else f"{current_parent_code or parent_counter}.{child_counter}"
                 output_ws.append([
                     code,
                     2,
@@ -324,6 +331,7 @@ def normalized_preview_rows(source_ws, cfg: SheetConfig, limit: int = 60) -> lis
     """Return the same filtered rows that the Excel export will contain."""
     rows: list[list[Any]] = []
     current_wbs2 = ""
+    current_parent_code = ""
     parent_counter = 0
     child_counter = 0
 
@@ -335,9 +343,12 @@ def normalized_preview_rows(source_ws, cfg: SheetConfig, limit: int = 60) -> lis
         if row_type in {"EMPTY", "TOTAL", "NOTE"}:
             continue
         if row_type == "WBS":
-            current_wbs2 = description
-            parent_counter += 1
-            child_counter = 0
+            item_no = safe_text(source_ws.cell(source_row, cfg.item_no_col).value) if cfg.item_no_col else ""
+            if numbering_level(item_no) == 1:
+                current_wbs2 = description
+                current_parent_code = item_no
+                parent_counter += 1
+                child_counter = 0
             continue
 
         amount = safe_number(source_ws.cell(source_row, cfg.amount_col).value) if cfg.amount_col else None
@@ -346,9 +357,12 @@ def normalized_preview_rows(source_ws, cfg: SheetConfig, limit: int = 60) -> lis
 
         if parent_counter == 0:
             parent_counter = 1
+            current_parent_code = "1"
         child_counter += 1
+        item_no = safe_text(source_ws.cell(source_row, cfg.item_no_col).value) if cfg.item_no_col else ""
+        code = item_no if (numbering_level(item_no) or 0) >= 2 else f"{current_parent_code or parent_counter}.{child_counter}"
         rows.append([
-            f"{parent_counter}.{child_counter}",
+            code,
             2,
             "ITEM",
             cfg.sheet_name,
