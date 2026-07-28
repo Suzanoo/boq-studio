@@ -268,6 +268,7 @@ def normalize_workbook(request: NormalizeRequest, progress: ProgressCallback | N
     output_wb = Workbook()
     output_wb.remove(output_wb.active)
     results: list[SheetResult] = []
+    normalized_sheet_names: list[str] = []
 
     total_sheets = len(request.sheets)
     for sheet_index, cfg in enumerate(request.sheets, start=1):
@@ -289,12 +290,15 @@ def normalize_workbook(request: NormalizeRequest, progress: ProgressCallback | N
                 progress(int(overall_done * 1000), total_sheets * 1000, message)
 
         try:
-            results.append(normalize_sheet(source_wb[cfg.sheet_name], target_ws, cfg, sheet_progress))
+            result = normalize_sheet(source_wb[cfg.sheet_name], target_ws, cfg, sheet_progress)
+            results.append(result)
+            normalized_sheet_names.append(target_ws.title)
         except Exception as exc:  # keep other sheets running
             output_wb.remove(target_ws)
             results.append(SheetResult(cfg.sheet_name, "ERROR", message=str(exc)))
 
-    add_log_sheet(output_wb, request, results)
+    project_rows = add_project_sheet(output_wb, normalized_sheet_names)
+    add_log_sheet(output_wb, request, results, project_rows)
     request.output_path.parent.mkdir(parents=True, exist_ok=True)
     output_wb.save(request.output_path)
     source_wb.close()
@@ -304,11 +308,39 @@ def normalize_workbook(request: NormalizeRequest, progress: ProgressCallback | N
     return results
 
 
-def add_log_sheet(wb, request: NormalizeRequest, results: list[SheetResult]) -> None:
+def add_project_sheet(wb, normalized_sheet_names: list[str]) -> int:
+    """Create one combined Project sheet from all normalized breakdown sheets.
+
+    The sheets are appended in the same order selected by the user. Each source
+    sheet contributes data rows only; the OKD header is written once.
+    """
+    ws = wb.create_sheet("Project", 0)
+    ws.append(OUTPUT_HEADERS)
+    project_rows = 0
+
+    for sheet_name in normalized_sheet_names:
+        source_ws = wb[sheet_name]
+        for row in source_ws.iter_rows(min_row=2, values_only=True):
+            if not any(value is not None and value != "" for value in row):
+                continue
+            ws.append(list(row))
+            project_rows += 1
+
+    style_output_sheet(ws)
+    return project_rows
+
+
+def add_log_sheet(
+    wb,
+    request: NormalizeRequest,
+    results: list[SheetResult],
+    project_rows: int,
+) -> None:
     ws = wb.create_sheet("LOG", 0)
     ws.append(["BOQ Studio MS-1", "Normalization Log"])
     ws.append(["Input", str(request.input_path)])
     ws.append(["Output", str(request.output_path)])
+    ws.append(["Project rows", project_rows])
     ws.append([])
     ws.append(["Sheet", "Status", "Source Rows", "Output Rows", "WBS Rows", "Item Rows", "Skipped Rows", "Message"])
     for result in results:
@@ -325,10 +357,10 @@ def add_log_sheet(wb, request: NormalizeRequest, results: list[SheetResult]) -> 
     for cell in ws[1]:
         cell.font = Font(size=14, bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="17365D")
-    for cell in ws[5]:
+    for cell in ws[6]:
         cell.font = Font(bold=True, color="FFFFFF")
         cell.fill = PatternFill("solid", fgColor="1F4E78")
-    ws.freeze_panes = "A6"
+    ws.freeze_panes = "A7"
     ws.column_dimensions["A"].width = 30
     ws.column_dimensions["B"].width = 18
     for col in range(3, 8):

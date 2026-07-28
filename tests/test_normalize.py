@@ -51,3 +51,48 @@ def test_normalize_filters_zero_amount_and_builds_okd_wbs(tmp_path: Path):
     assert ws_out["F2"].value == "งานโครงสร้าง"
     assert ws_out["G2"].value == "งานคอนกรีต"
     assert ws_out["M2"].value == 25000
+
+
+def test_project_sheet_combines_normalized_sheets_in_selected_order(tmp_path: Path):
+    source = tmp_path / "multi.xlsx"
+    output = tmp_path / "multi_OKD.xlsx"
+    wb = Workbook()
+    first = wb.active
+    first.title = "Arch"
+    second = wb.create_sheet("Structure")
+    for ws, description, amount in (
+        (first, "งานสถาปัตย์", 1000),
+        (second, "งานโครงสร้าง", 2000),
+    ):
+        ws.append(["No", "Description", "Unit", "Qty", "Material", "Labor", "Amount"])
+        ws.append([1, description, "งาน", 1, amount, 0, amount])
+    wb.save(source)
+
+    configs = [
+        SheetConfig(
+            sheet_name=name,
+            header_row=1,
+            start_row=2,
+            item_no_col=1,
+            description_cols=[2],
+            unit_col=3,
+            qty_col=4,
+            material_col=5,
+            labor_col=6,
+            amount_col=7,
+        )
+        for name in ("Arch", "Structure")
+    ]
+    normalize_workbook(NormalizeRequest(source, output, configs))
+
+    out = load_workbook(output, data_only=True)
+    assert out.sheetnames[:2] == ["LOG", "Project"]
+    project = out["Project"]
+    assert project.max_row == 3
+    assert project["E2"].value == "Arch"
+    assert project["H2"].value == "งานสถาปัตย์"
+    assert project["M2"].value == 1000
+    assert project["E3"].value == "Structure"
+    assert project["H3"].value == "งานโครงสร้าง"
+    assert project["M3"].value == 2000
+    assert out["LOG"]["B4"].value == 2

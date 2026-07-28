@@ -1,8 +1,8 @@
-# BOQ Studio — MS-1.2
+# BOQ Studio — MS-1.4
 
 Desktop application for converting badly formatted BOQ breakdown sheets into separate **OKD-compatible sheets**.
 
-## MS-1.2 scope
+## MS-1.4 scope
 
 - User chooses an `.xlsx` BOQ file.
 - Program lists every sheet.
@@ -17,6 +17,7 @@ Desktop application for converting badly formatted BOQ breakdown sheets into sep
 - Original workbook is never modified.
 - Output is a new `*_OKD.xlsx` file on the user's Desktop.
 - Progress bar shows the current sheet and source row.
+- A `Project` sheet combines every normalized breakdown sheet in the user-selected order.
 - A `LOG` sheet records processed, skipped, warning, and error counts.
 
 ## Output columns
@@ -127,3 +128,14 @@ The repository is initialized. Run `git log --oneline` to see the milestone comm
 - `WBS-2` is the source sheet name.
 - `WBS-3` and `WBS-4` are generated from detected BOQ headings.
 - Preview and Export use the same normalization rules.
+
+
+## MS-1.4 Project sheet
+
+- The output workbook contains a `Project` sheet immediately after `LOG`.
+- Its header appears once.
+- Data rows from each successfully normalized breakdown sheet are appended in the same order selected by the user.
+- `Source Sheet` and `Source Row` remain available for traceability.
+- Use the `Project` sheet as the single consolidated input for OKD.
+
+> Important: importing both `Project` and the individual normalized sheets into OKD will duplicate the amounts. Select only `Project` for the consolidated workflow.
