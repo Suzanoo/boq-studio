@@ -143,9 +143,21 @@ def get_wbs_level(ws, row: int, cfg: SheetConfig, description: str) -> int:
 
 
 def normalize_sheet(source_ws, output_ws, cfg: SheetConfig, progress: ProgressCallback | None = None) -> SheetResult:
+    """Normalize one breakdown sheet into OKD-ready cost rows.
+
+    MS-1.2 intentionally keeps the hierarchy shallow:
+    - WBS-1 is always the source sheet name.
+    - WBS-2 is the latest detected BOQ heading.
+    - WBS-3 and WBS-4 are blank.
+    - Only rows with Amount > 0 are exported.
+
+    Heading rows are still parsed internally to build WBS-2, but they are not
+    written to the output because they do not carry a cost amount.
+    """
     result = SheetResult(sheet_name=cfg.sheet_name, status="OK")
-    counters = [0] * cfg.max_wbs_level
-    current_names = [""] * cfg.max_wbs_level
+    current_wbs2 = ""
+    parent_counter = 0
+    child_counter = 0
     max_row = source_ws.max_row
     total_rows = max(0, max_row - cfg.start_row + 1)
 
@@ -163,63 +175,50 @@ def normalize_sheet(source_ws, output_ws, cfg: SheetConfig, progress: ProgressCa
 
         if row_type in {"EMPTY", "TOTAL", "NOTE"}:
             result.skipped_rows += 1
-            if progress:
-                progress(index, total_rows, f"{cfg.sheet_name}: row {source_row}")
-            continue
-
-        if row_type == "WBS":
-            level = get_wbs_level(source_ws, source_row, cfg, description)
-            counters[level - 1] += 1
-            for pos in range(level, cfg.max_wbs_level):
-                counters[pos] = 0
-                current_names[pos] = ""
-            current_names[level - 1] = description
-            code = ".".join(str(n) for n in counters[:level] if n > 0)
-            output_ws.append([
-                code,
-                level,
-                "WBS",
-                *current_names[:4],
-                description,
-                "",
-                None,
-                None,
-                None,
-                None,
-                cfg.sheet_name,
-                source_row,
-            ])
+        elif row_type == "WBS":
+            # Keep the latest detected heading as the single WBS-2 level.
+            current_wbs2 = description
+            parent_counter += 1
+            child_counter = 0
             result.wbs_rows += 1
+            result.skipped_rows += 1
         else:
-            active_levels = [idx + 1 for idx, name in enumerate(current_names) if name]
-            level = max(active_levels, default=1)
-            code = ".".join(str(n) for n in counters[:level] if n > 0)
-            output_ws.append([
-                code,
-                level,
-                "ITEM",
-                *current_names[:4],
-                description,
-                safe_text(source_ws.cell(source_row, cfg.unit_col).value) if cfg.unit_col else "",
-                safe_number(source_ws.cell(source_row, cfg.qty_col).value) if cfg.qty_col else None,
-                safe_number(source_ws.cell(source_row, cfg.material_col).value) if cfg.material_col else None,
-                safe_number(source_ws.cell(source_row, cfg.labor_col).value) if cfg.labor_col else None,
-                safe_number(source_ws.cell(source_row, cfg.amount_col).value) if cfg.amount_col else None,
-                cfg.sheet_name,
-                source_row,
-            ])
-            result.item_rows += 1
+            amount = safe_number(source_ws.cell(source_row, cfg.amount_col).value) if cfg.amount_col else None
+            if amount is None or amount <= 0:
+                result.skipped_rows += 1
+            else:
+                if parent_counter == 0:
+                    parent_counter = 1
+                child_counter += 1
+                code = f"{parent_counter}.{child_counter}"
+                output_ws.append([
+                    code,
+                    2,
+                    "ITEM",
+                    cfg.sheet_name,
+                    current_wbs2,
+                    "",
+                    "",
+                    description,
+                    safe_text(source_ws.cell(source_row, cfg.unit_col).value) if cfg.unit_col else "",
+                    safe_number(source_ws.cell(source_row, cfg.qty_col).value) if cfg.qty_col else None,
+                    safe_number(source_ws.cell(source_row, cfg.material_col).value) if cfg.material_col else None,
+                    safe_number(source_ws.cell(source_row, cfg.labor_col).value) if cfg.labor_col else None,
+                    amount,
+                    cfg.sheet_name,
+                    source_row,
+                ])
+                result.item_rows += 1
+                result.output_rows += 1
 
-        result.output_rows += 1
         if progress:
             progress(index, total_rows, f"{cfg.sheet_name}: row {source_row}")
 
     style_output_sheet(output_ws)
     if result.output_rows == 0:
         result.status = "WARNING"
-        result.message = "No WBS or item rows were produced. Check the mapping."
+        result.message = "No rows with Amount greater than zero were produced. Check the mapping."
     return result
-
 
 def style_output_sheet(ws) -> None:
     widths = {
@@ -322,44 +321,50 @@ def add_log_sheet(wb, request: NormalizeRequest, results: list[SheetResult]) -> 
 
 
 def normalized_preview_rows(source_ws, cfg: SheetConfig, limit: int = 60) -> list[list[Any]]:
-    """Return normalized rows without creating a workbook, for the mapping preview."""
+    """Return the same filtered rows that the Excel export will contain."""
     rows: list[list[Any]] = []
-    counters = [0] * cfg.max_wbs_level
-    current_names = [""] * cfg.max_wbs_level
+    current_wbs2 = ""
+    parent_counter = 0
+    child_counter = 0
 
     for source_row in range(cfg.start_row, source_ws.max_row + 1):
         description_parts = [safe_text(source_ws.cell(source_row, col).value) for col in cfg.description_cols]
         description = " ".join(part for part in description_parts if part)
         row_type = classify_row(source_ws, source_row, cfg, description)
+
         if row_type in {"EMPTY", "TOTAL", "NOTE"}:
             continue
-
         if row_type == "WBS":
-            level = get_wbs_level(source_ws, source_row, cfg, description)
-            counters[level - 1] += 1
-            for pos in range(level, cfg.max_wbs_level):
-                counters[pos] = 0
-                current_names[pos] = ""
-            current_names[level - 1] = description
-            code = ".".join(str(n) for n in counters[:level] if n > 0)
-            row = [
-                code, level, "WBS", *current_names[:4], description, "",
-                None, None, None, None, cfg.sheet_name, source_row,
-            ]
-        else:
-            active_levels = [idx + 1 for idx, name in enumerate(current_names) if name]
-            level = max(active_levels, default=1)
-            code = ".".join(str(n) for n in counters[:level] if n > 0)
-            row = [
-                code, level, "ITEM", *current_names[:4], description,
-                safe_text(source_ws.cell(source_row, cfg.unit_col).value) if cfg.unit_col else "",
-                safe_number(source_ws.cell(source_row, cfg.qty_col).value) if cfg.qty_col else None,
-                safe_number(source_ws.cell(source_row, cfg.material_col).value) if cfg.material_col else None,
-                safe_number(source_ws.cell(source_row, cfg.labor_col).value) if cfg.labor_col else None,
-                safe_number(source_ws.cell(source_row, cfg.amount_col).value) if cfg.amount_col else None,
-                cfg.sheet_name, source_row,
-            ]
-        rows.append(row)
+            current_wbs2 = description
+            parent_counter += 1
+            child_counter = 0
+            continue
+
+        amount = safe_number(source_ws.cell(source_row, cfg.amount_col).value) if cfg.amount_col else None
+        if amount is None or amount <= 0:
+            continue
+
+        if parent_counter == 0:
+            parent_counter = 1
+        child_counter += 1
+        rows.append([
+            f"{parent_counter}.{child_counter}",
+            2,
+            "ITEM",
+            cfg.sheet_name,
+            current_wbs2,
+            "",
+            "",
+            description,
+            safe_text(source_ws.cell(source_row, cfg.unit_col).value) if cfg.unit_col else "",
+            safe_number(source_ws.cell(source_row, cfg.qty_col).value) if cfg.qty_col else None,
+            safe_number(source_ws.cell(source_row, cfg.material_col).value) if cfg.material_col else None,
+            safe_number(source_ws.cell(source_row, cfg.labor_col).value) if cfg.labor_col else None,
+            amount,
+            cfg.sheet_name,
+            source_row,
+        ])
         if len(rows) >= limit:
             break
     return rows
+

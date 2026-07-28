@@ -31,8 +31,8 @@ def test_auto_detect_mapping_and_preview(tmp_path: Path):
     assert cfg.amount_col == 7
 
     rows = normalized_preview_rows(ws, cfg)
-    assert len(rows) == 3
-    assert rows[-1][2] == "ITEM"
+    assert len(rows) == 1
+    assert rows[0][2] == "ITEM"
     assert rows[-1][12] == 25000
 
 

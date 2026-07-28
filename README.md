@@ -1,8 +1,8 @@
-# BOQ Studio — MS-1.1
+# BOQ Studio — MS-1.2
 
 Desktop application for converting badly formatted BOQ breakdown sheets into separate **OKD-compatible sheets**.
 
-## MS-1.1 scope
+## MS-1.2 scope
 
 - User chooses an `.xlsx` BOQ file.
 - Program lists every sheet.
@@ -96,7 +96,7 @@ python -m boq_studio
 9. Save the mapping and click **Normalize to Desktop**.
 10. Open `<original-name>_OKD.xlsx` from Desktop.
 
-## WBS rules in MS-1.1
+## WBS rules in MS-1.2
 
 A row is treated as an item when it contains a unit or a numeric Qty/Material/Labor/Amount value. Other descriptive rows become WBS nodes, except total and note rows, which are skipped.
 
@@ -118,3 +118,11 @@ pytest
 ## Git
 
 The repository is initialized. Run `git log --oneline` to see the milestone commits.
+
+
+## MS-1.2 output rules
+
+- Only rows with `Amount > 0` are exported.
+- `WBS-1` is the source sheet name.
+- `WBS-2` is the latest detected heading.
+- `WBS-3` and `WBS-4` remain blank.
