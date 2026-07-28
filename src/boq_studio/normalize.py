@@ -74,9 +74,9 @@ def safe_number(value: Any) -> float | None:
 
 def numbering_level(text: str) -> int | None:
     text = text.strip()
-    match = re.match(r"^(\d+(?:\.\d+){0,3})[.)\-\s]", text)
+    match = re.fullmatch(r"(\d+(?:\.\d+){0,3})", text)
     if not match:
-        match = re.fullmatch(r"(\d+(?:\.\d+){0,3})", text)
+        match = re.match(r"^(\d+(?:\.\d+){0,3})[)\-\s]", text)
     if match:
         return min(4, match.group(1).count(".") + 1)
     thai_match = re.match(r"^(?:หมวด|ส่วนที่|งานที่)\s*(\d+)", text, flags=re.I)
