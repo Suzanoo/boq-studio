@@ -1,8 +1,8 @@
-# BOQ Studio — MS-1.4
+# BOQ Studio — MS-1.5
 
 Desktop application for converting badly formatted BOQ breakdown sheets into separate **OKD-compatible sheets**.
 
-## MS-1.4 scope
+## MS-1.5 scope
 
 - User chooses an `.xlsx` BOQ file.
 - Program lists every sheet.
@@ -139,3 +139,13 @@ The repository is initialized. Run `git log --oneline` to see the milestone comm
 - Use the `Project` sheet as the single consolidated input for OKD.
 
 > Important: importing both `Project` and the individual normalized sheets into OKD will duplicate the amounts. Select only `Project` for the consolidated workflow.
+
+
+## MS-1.5 amount checks
+
+- A separate `SUMMARY` sheet shows the live `Amount` total for every normalized breakdown sheet.
+- `Grand Total` sums all selected breakdown sheets.
+- `Project Sheet Total` independently sums the consolidated `Project` sheet.
+- `Difference` should remain zero and helps the user verify manual edits.
+- Totals use Excel formulas and therefore update when the user edits amounts manually.
+- No total rows are inserted into the OKD data sheets, preventing duplicate amounts during import.

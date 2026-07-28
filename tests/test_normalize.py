@@ -86,7 +86,7 @@ def test_project_sheet_combines_normalized_sheets_in_selected_order(tmp_path: Pa
     normalize_workbook(NormalizeRequest(source, output, configs))
 
     out = load_workbook(output, data_only=True)
-    assert out.sheetnames[:2] == ["LOG", "Project"]
+    assert out.sheetnames[:3] == ["LOG", "SUMMARY", "Project"]
     project = out["Project"]
     assert project.max_row == 3
     assert project["E2"].value == "Arch"
@@ -96,3 +96,35 @@ def test_project_sheet_combines_normalized_sheets_in_selected_order(tmp_path: Pa
     assert project["H3"].value == "งานโครงสร้าง"
     assert project["M3"].value == 2000
     assert out["LOG"]["B4"].value == 2
+
+
+def test_summary_sheet_uses_live_formulas(tmp_path: Path):
+    source = tmp_path / "summary_source.xlsx"
+    output = tmp_path / "summary_output.xlsx"
+    wb = Workbook()
+    first = wb.active
+    first.title = "Arch"
+    second = wb.create_sheet("MEP")
+    for ws, amount in ((first, 1250), (second, 2750)):
+        ws.append(["No", "Description", "Unit", "Qty", "Material", "Labor", "Amount"])
+        ws.append([1, "Item", "งาน", 1, amount, 0, amount])
+    wb.save(source)
+
+    configs = [
+        SheetConfig(name, 1, 2, 1, [2], 3, 4, 5, 6, 7)
+        for name in ("Arch", "MEP")
+    ]
+    normalize_workbook(NormalizeRequest(source, output, configs))
+
+    out = load_workbook(output, data_only=False)
+    summary = out["SUMMARY"]
+    assert summary["A3"].value == "Arch"
+    assert summary["C3"].value == "=SUM('Arch'!M2:M2)"
+    assert summary["A4"].value == "MEP"
+    assert summary["C4"].value == "=SUM('MEP'!M2:M2)"
+    assert summary["A6"].value == "Grand Total"
+    assert summary["C6"].value == "=SUM(C3:C4)"
+    assert summary["A8"].value == "Project Sheet Total"
+    assert summary["C8"].value == "=SUM('Project'!M2:M3)"
+    assert summary["A9"].value == "Difference"
+    assert summary["C9"].value == "=C8-C6"

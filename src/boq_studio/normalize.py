@@ -298,6 +298,7 @@ def normalize_workbook(request: NormalizeRequest, progress: ProgressCallback | N
             results.append(SheetResult(cfg.sheet_name, "ERROR", message=str(exc)))
 
     project_rows = add_project_sheet(output_wb, normalized_sheet_names)
+    add_summary_sheet(output_wb, normalized_sheet_names)
     add_log_sheet(output_wb, request, results, project_rows)
     request.output_path.parent.mkdir(parents=True, exist_ok=True)
     output_wb.save(request.output_path)
@@ -328,6 +329,70 @@ def add_project_sheet(wb, normalized_sheet_names: list[str]) -> int:
 
     style_output_sheet(ws)
     return project_rows
+
+
+
+def excel_sheet_ref(sheet_name: str) -> str:
+    """Return a safely quoted Excel sheet reference."""
+    return "'" + sheet_name.replace("'", "''") + "'"
+
+
+def add_summary_sheet(wb, normalized_sheet_names: list[str]) -> None:
+    """Add live amount checks without contaminating OKD data sheets.
+
+    Every amount is an Excel formula, so manual edits to any normalized sheet
+    are reflected when the workbook recalculates in Excel.  Keeping totals in a
+    separate sheet prevents OKD from importing a total row as another BOQ item.
+    """
+    ws = wb.create_sheet("SUMMARY", 0)
+    ws.append(["BOQ Studio", "Amount Check"])
+    ws.append(["Sheet", "Item Rows", "Amount"])
+
+    first_detail_row = 3
+    for sheet_name in normalized_sheet_names:
+        source_ws = wb[sheet_name]
+        last_row = max(2, source_ws.max_row)
+        row_no = ws.max_row + 1
+        ref = excel_sheet_ref(sheet_name)
+        ws.cell(row=row_no, column=1, value=sheet_name)
+        ws.cell(row=row_no, column=2, value=f"=MAX(COUNTA({ref}!M2:M{last_row}),0)")
+        ws.cell(row=row_no, column=3, value=f"=SUM({ref}!M2:M{last_row})")
+
+    last_detail_row = ws.max_row
+    grand_row = last_detail_row + 2
+    ws.cell(row=grand_row, column=1, value="Grand Total")
+    if last_detail_row >= first_detail_row:
+        ws.cell(row=grand_row, column=2, value=f"=SUM(B{first_detail_row}:B{last_detail_row})")
+        ws.cell(row=grand_row, column=3, value=f"=SUM(C{first_detail_row}:C{last_detail_row})")
+    else:
+        ws.cell(row=grand_row, column=2, value=0)
+        ws.cell(row=grand_row, column=3, value=0)
+
+    project_row = grand_row + 2
+    project_ws = wb["Project"]
+    project_last_row = max(2, project_ws.max_row)
+    ws.cell(row=project_row, column=1, value="Project Sheet Total")
+    ws.cell(row=project_row, column=3, value=f"=SUM('Project'!M2:M{project_last_row})")
+    ws.cell(row=project_row + 1, column=1, value="Difference")
+    ws.cell(row=project_row + 1, column=3, value=f"=C{project_row}-C{grand_row}")
+
+    for cell in ws[1]:
+        cell.font = Font(size=14, bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="17365D")
+    for cell in ws[2]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+    for cell in ws[grand_row]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="548235")
+    ws.cell(row=project_row + 1, column=1).font = Font(bold=True)
+    ws.cell(row=project_row + 1, column=3).font = Font(bold=True)
+    ws.freeze_panes = "A3"
+    ws.column_dimensions["A"].width = 34
+    ws.column_dimensions["B"].width = 14
+    ws.column_dimensions["C"].width = 20
+    for row in range(first_detail_row, project_row + 2):
+        ws.cell(row=row, column=3).number_format = '#,##0.00;[Red]-#,##0.00;'
 
 
 def add_log_sheet(
