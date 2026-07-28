@@ -1,0 +1,120 @@
+# BOQ Studio — MS-1
+
+Desktop application for converting badly formatted BOQ breakdown sheets into separate **OKD-compatible sheets**.
+
+## MS-1 scope
+
+- User chooses an `.xlsx` BOQ file.
+- Program lists every sheet.
+- User selects only breakdown sheets.
+- Each selected sheet has its own column mapping.
+- Description can come from more than one source column.
+- Program detects WBS/header rows and item rows using deterministic rules.
+- WBS codes are generated separately inside each sheet.
+- Original workbook is never modified.
+- Output is a new `*_OKD.xlsx` file on the user's Desktop.
+- Progress bar shows the current sheet and source row.
+- A `LOG` sheet records processed, skipped, warning, and error counts.
+
+## Output columns
+
+Every normalized sheet contains:
+
+```text
+WBS Code
+WBS Level
+Node Type
+WBS-1
+WBS-2
+WBS-3
+WBS-4
+Description
+Unit
+Qty
+Material
+Labor
+Amount
+Source Sheet
+Source Row
+```
+
+The required OKD columns remain present: `WBS-1` to `WBS-4`, `Description`, `Unit`, `Qty`, `Material`, `Labor`, and `Amount`.
+
+## Install on Windows or macOS
+
+```bash
+cd boq-studio
+python -m venv .venv
+```
+
+Activate the environment.
+
+### Windows PowerShell
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+### macOS / Linux
+
+```bash
+source .venv/bin/activate
+```
+
+Install:
+
+```bash
+python -m pip install --upgrade pip
+pip install -e .
+```
+
+Run:
+
+```bash
+boq-studio
+```
+
+or:
+
+```bash
+python -m boq_studio
+```
+
+## Workflow
+
+1. Click **Choose Excel file**.
+2. Select the breakdown sheets only.
+3. Double-click each selected sheet.
+4. Set the header row and first data row.
+5. Map Item No, Unit, Qty, Material, Labor, and Amount.
+6. Select one or more Description columns with Ctrl/Shift.
+7. Save the mapping.
+8. Click **Normalize to Desktop**.
+9. Open `<original-name>_OKD.xlsx` from Desktop.
+
+## WBS rules in MS-1
+
+A row is treated as an item when it contains a unit or a numeric Qty/Material/Labor/Amount value. Other descriptive rows become WBS nodes, except total and note rows, which are skipped.
+
+WBS level is detected in this order:
+
+1. Numbering such as `1`, `1.1`, `1.1.1`.
+2. Numbering at the beginning of Description.
+3. Position/indentation of the selected Description columns.
+
+This is deliberately rule-based. MS-1 does not use AI and does not claim perfect automatic interpretation. `Source Sheet` and `Source Row` are retained so every normalized row can be checked against the original BOQ.
+
+## Tests
+
+```bash
+pip install pytest
+pytest
+```
+
+## Git
+
+The repository is initialized and contains the first commit:
+
+```text
+feat: implement BOQ Studio MS-1
+```

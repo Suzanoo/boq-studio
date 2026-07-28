@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "boq-studio"
+version = "0.1.0"
+description = "Normalize badly formatted BOQ workbooks into OKD-compatible sheets."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["openpyxl>=3.1,<4"]
+
+[project.scripts]
+boq-studio = "boq_studio.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
