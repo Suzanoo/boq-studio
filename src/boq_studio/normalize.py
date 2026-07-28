@@ -319,3 +319,47 @@ def add_log_sheet(wb, request: NormalizeRequest, results: list[SheetResult]) -> 
     for col in range(3, 8):
         ws.column_dimensions[get_column_letter(col)].width = 14
     ws.column_dimensions["H"].width = 50
+
+
+def normalized_preview_rows(source_ws, cfg: SheetConfig, limit: int = 60) -> list[list[Any]]:
+    """Return normalized rows without creating a workbook, for the mapping preview."""
+    rows: list[list[Any]] = []
+    counters = [0] * cfg.max_wbs_level
+    current_names = [""] * cfg.max_wbs_level
+
+    for source_row in range(cfg.start_row, source_ws.max_row + 1):
+        description_parts = [safe_text(source_ws.cell(source_row, col).value) for col in cfg.description_cols]
+        description = " ".join(part for part in description_parts if part)
+        row_type = classify_row(source_ws, source_row, cfg, description)
+        if row_type in {"EMPTY", "TOTAL", "NOTE"}:
+            continue
+
+        if row_type == "WBS":
+            level = get_wbs_level(source_ws, source_row, cfg, description)
+            counters[level - 1] += 1
+            for pos in range(level, cfg.max_wbs_level):
+                counters[pos] = 0
+                current_names[pos] = ""
+            current_names[level - 1] = description
+            code = ".".join(str(n) for n in counters[:level] if n > 0)
+            row = [
+                code, level, "WBS", *current_names[:4], description, "",
+                None, None, None, None, cfg.sheet_name, source_row,
+            ]
+        else:
+            active_levels = [idx + 1 for idx, name in enumerate(current_names) if name]
+            level = max(active_levels, default=1)
+            code = ".".join(str(n) for n in counters[:level] if n > 0)
+            row = [
+                code, level, "ITEM", *current_names[:4], description,
+                safe_text(source_ws.cell(source_row, cfg.unit_col).value) if cfg.unit_col else "",
+                safe_number(source_ws.cell(source_row, cfg.qty_col).value) if cfg.qty_col else None,
+                safe_number(source_ws.cell(source_row, cfg.material_col).value) if cfg.material_col else None,
+                safe_number(source_ws.cell(source_row, cfg.labor_col).value) if cfg.labor_col else None,
+                safe_number(source_ws.cell(source_row, cfg.amount_col).value) if cfg.amount_col else None,
+                cfg.sheet_name, source_row,
+            ]
+        rows.append(row)
+        if len(rows) >= limit:
+            break
+    return rows

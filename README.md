@@ -1,13 +1,16 @@
-# BOQ Studio — MS-1
+# BOQ Studio — MS-1.1
 
 Desktop application for converting badly formatted BOQ breakdown sheets into separate **OKD-compatible sheets**.
 
-## MS-1 scope
+## MS-1.1 scope
 
 - User chooses an `.xlsx` BOQ file.
 - Program lists every sheet.
 - User selects only breakdown sheets.
 - Each selected sheet has its own column mapping.
+- **Auto Detect** suggests the header row, first detail row, and OKD columns.
+- Mapping templates can be saved, loaded, and automatically reused.
+- A **Normalized Preview** shows WBS and ITEM output before export.
 - Description can come from more than one source column.
 - Program detects WBS/header rows and item rows using deterministic rules.
 - WBS codes are generated separately inside each sheet.
@@ -85,14 +88,15 @@ python -m boq_studio
 1. Click **Choose Excel file**.
 2. Select the breakdown sheets only.
 3. Double-click each selected sheet.
-4. Set the header row and first data row.
-5. Map Item No, Unit, Qty, Material, Labor, and Amount.
+4. Click **Auto Detect** and review its suggestions.
+5. Adjust Header row, First data row, and mapped columns when needed.
 6. Select one or more Description columns with Ctrl/Shift.
-7. Save the mapping.
-8. Click **Normalize to Desktop**.
-9. Open `<original-name>_OKD.xlsx` from Desktop.
+7. Open the **Normalized** tab and refresh the preview.
+8. Optionally save or load a reusable `.json` mapping template.
+9. Save the mapping and click **Normalize to Desktop**.
+10. Open `<original-name>_OKD.xlsx` from Desktop.
 
-## WBS rules in MS-1
+## WBS rules in MS-1.1
 
 A row is treated as an item when it contains a unit or a numeric Qty/Material/Labor/Amount value. Other descriptive rows become WBS nodes, except total and note rows, which are skipped.
 
@@ -113,8 +117,4 @@ pytest
 
 ## Git
 
-The repository is initialized and contains the first commit:
-
-```text
-feat: implement BOQ Studio MS-1
-```
+The repository is initialized. Run `git log --oneline` to see the milestone commits.
