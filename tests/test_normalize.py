@@ -6,7 +6,7 @@ from boq_studio.models import NormalizeRequest, SheetConfig
 from boq_studio.normalize import normalize_workbook
 
 
-def test_normalize_filters_zero_amount_and_uses_shallow_wbs(tmp_path: Path):
+def test_normalize_filters_zero_amount_and_builds_okd_wbs(tmp_path: Path):
     source = tmp_path / "source.xlsx"
     output = tmp_path / "source_OKD.xlsx"
     wb = Workbook()
@@ -40,14 +40,14 @@ def test_normalize_filters_zero_amount_and_uses_shallow_wbs(tmp_path: Path):
     results = normalize_workbook(request)
     assert results[0].output_rows == 1
     assert results[0].item_rows == 1
-    assert results[0].wbs_rows == 1
+    assert results[0].wbs_rows == 2
 
     out = load_workbook(output, data_only=True)
     ws_out = out["Breakdown"]
     assert ws_out.max_row == 2
-    assert ws_out["A2"].value == "1.1"
-    assert ws_out["D2"].value == "Breakdown"
-    assert ws_out["E2"].value == "งานโครงสร้าง"
-    assert ws_out["F2"].value in (None, "")
-    assert ws_out["G2"].value in (None, "")
+    assert ws_out["A2"].value == "1.1.1"
+    assert ws_out["D2"].value == "Project"
+    assert ws_out["E2"].value == "Breakdown"
+    assert ws_out["F2"].value == "งานโครงสร้าง"
+    assert ws_out["G2"].value == "งานคอนกรีต"
     assert ws_out["M2"].value == 25000

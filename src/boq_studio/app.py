@@ -297,7 +297,7 @@ class SheetMappingDialog(tk.Toplevel):
 class BOQStudioApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("BOQ Studio — MS-1.2")
+        self.title("BOQ Studio — MS-1.3")
         self.geometry("980x720")
         self.minsize(840, 620)
         self.input_path: Path | None = None

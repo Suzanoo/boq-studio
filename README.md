@@ -120,9 +120,10 @@ pytest
 The repository is initialized. Run `git log --oneline` to see the milestone commits.
 
 
-## MS-1.2 output rules
+## MS-1.3 output rules
 
 - Only rows with `Amount > 0` are exported.
-- `WBS-1` is the source sheet name.
-- `WBS-2` is the latest detected heading.
-- `WBS-3` and `WBS-4` remain blank.
+- `WBS-1` is the placeholder `Project` for the user to rename later.
+- `WBS-2` is the source sheet name.
+- `WBS-3` and `WBS-4` are generated from detected BOQ headings.
+- Preview and Export use the same normalization rules.

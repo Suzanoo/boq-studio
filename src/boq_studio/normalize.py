@@ -145,17 +145,18 @@ def get_wbs_level(ws, row: int, cfg: SheetConfig, description: str) -> int:
 def normalize_sheet(source_ws, output_ws, cfg: SheetConfig, progress: ProgressCallback | None = None) -> SheetResult:
     """Normalize one breakdown sheet into OKD-ready cost rows.
 
-    MS-1.2 intentionally keeps the hierarchy shallow:
-    - WBS-1 is always the source sheet name.
-    - WBS-2 is the latest detected BOQ heading.
-    - WBS-3 and WBS-4 are blank.
+    MS-1.3 output hierarchy:
+    - WBS-1 is the literal placeholder ``Project`` for the user to rename later.
+    - WBS-2 is the source sheet name.
+    - WBS-3 and WBS-4 are generated from detected BOQ headings.
     - Only rows with Amount > 0 are exported.
 
-    Heading rows are still parsed internally to build WBS-2, but they are not
-    written to the output because they do not carry a cost amount.
+    Heading rows are parsed to build the hierarchy, but are not exported because
+    they do not carry a cost amount.
     """
     result = SheetResult(sheet_name=cfg.sheet_name, status="OK")
-    current_wbs2 = ""
+    current_wbs3 = ""
+    current_wbs4 = ""
     current_parent_code = ""
     parent_counter = 0
     child_counter = 0
@@ -178,12 +179,19 @@ def normalize_sheet(source_ws, output_ws, cfg: SheetConfig, progress: ProgressCa
             result.skipped_rows += 1
         elif row_type == "WBS":
             item_no = safe_text(source_ws.cell(source_row, cfg.item_no_col).value) if cfg.item_no_col else ""
-            # For MS-1.2, only a top-level numbered heading becomes WBS-2.
-            # Unnumbered continuation text must not replace the active heading.
-            if numbering_level(item_no) == 1:
-                current_wbs2 = description
-                current_parent_code = item_no
+            level = numbering_level(item_no) or numbering_level(description)
+            # Do not treat unnumbered continuation text as a WBS heading.
+            if level == 1:
+                current_wbs3 = description
+                current_wbs4 = ""
+                current_parent_code = item_no or str(parent_counter + 1)
                 parent_counter += 1
+                child_counter = 0
+                result.wbs_rows += 1
+            elif level is not None:
+                current_wbs4 = description
+                if item_no:
+                    current_parent_code = item_no
                 child_counter = 0
                 result.wbs_rows += 1
             result.skipped_rows += 1
@@ -198,14 +206,15 @@ def normalize_sheet(source_ws, output_ws, cfg: SheetConfig, progress: ProgressCa
                 child_counter += 1
                 item_no = safe_text(source_ws.cell(source_row, cfg.item_no_col).value) if cfg.item_no_col else ""
                 code = item_no if (numbering_level(item_no) or 0) >= 2 else f"{current_parent_code or parent_counter}.{child_counter}"
+                wbs_level = 4 if current_wbs4 else 3
                 output_ws.append([
                     code,
-                    2,
+                    wbs_level,
                     "ITEM",
+                    "Project",
                     cfg.sheet_name,
-                    current_wbs2,
-                    "",
-                    "",
+                    current_wbs3,
+                    current_wbs4,
                     description,
                     safe_text(source_ws.cell(source_row, cfg.unit_col).value) if cfg.unit_col else "",
                     safe_number(source_ws.cell(source_row, cfg.qty_col).value) if cfg.qty_col else None,
@@ -328,9 +337,10 @@ def add_log_sheet(wb, request: NormalizeRequest, results: list[SheetResult]) -> 
 
 
 def normalized_preview_rows(source_ws, cfg: SheetConfig, limit: int = 60) -> list[list[Any]]:
-    """Return the same filtered rows that the Excel export will contain."""
+    """Return the same filtered rows and WBS hierarchy as the Excel export."""
     rows: list[list[Any]] = []
-    current_wbs2 = ""
+    current_wbs3 = ""
+    current_wbs4 = ""
     current_parent_code = ""
     parent_counter = 0
     child_counter = 0
@@ -344,10 +354,18 @@ def normalized_preview_rows(source_ws, cfg: SheetConfig, limit: int = 60) -> lis
             continue
         if row_type == "WBS":
             item_no = safe_text(source_ws.cell(source_row, cfg.item_no_col).value) if cfg.item_no_col else ""
-            if numbering_level(item_no) == 1:
-                current_wbs2 = description
-                current_parent_code = item_no
+            level = numbering_level(item_no) or numbering_level(description)
+            # Ignore unnumbered continuation text; it must not replace WBS-4.
+            if level == 1:
+                current_wbs3 = description
+                current_wbs4 = ""
+                current_parent_code = item_no or str(parent_counter + 1)
                 parent_counter += 1
+                child_counter = 0
+            elif level is not None:
+                current_wbs4 = description
+                if item_no:
+                    current_parent_code = item_no
                 child_counter = 0
             continue
 
@@ -363,12 +381,12 @@ def normalized_preview_rows(source_ws, cfg: SheetConfig, limit: int = 60) -> lis
         code = item_no if (numbering_level(item_no) or 0) >= 2 else f"{current_parent_code or parent_counter}.{child_counter}"
         rows.append([
             code,
-            2,
+            4 if current_wbs4 else 3,
             "ITEM",
+            "Project",
             cfg.sheet_name,
-            current_wbs2,
-            "",
-            "",
+            current_wbs3,
+            current_wbs4,
             description,
             safe_text(source_ws.cell(source_row, cfg.unit_col).value) if cfg.unit_col else "",
             safe_number(source_ws.cell(source_row, cfg.qty_col).value) if cfg.qty_col else None,
