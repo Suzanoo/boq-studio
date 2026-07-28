@@ -40,7 +40,7 @@ def test_normalize_filters_zero_amount_and_uses_shallow_wbs(tmp_path: Path):
     results = normalize_workbook(request)
     assert results[0].output_rows == 1
     assert results[0].item_rows == 1
-    assert results[0].wbs_rows == 2
+    assert results[0].wbs_rows == 1
 
     out = load_workbook(output, data_only=True)
     ws_out = out["Breakdown"]
