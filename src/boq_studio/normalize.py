@@ -321,10 +321,27 @@ def add_project_sheet(wb, normalized_sheet_names: list[str]) -> int:
 
     for sheet_name in normalized_sheet_names:
         source_ws = wb[sheet_name]
-        for row in source_ws.iter_rows(min_row=2, values_only=True):
-            if not any(value is not None and value != "" for value in row):
+        sheet_ref = excel_sheet_ref(sheet_name)
+        for source_row in range(2, source_ws.max_row + 1):
+            values = [
+                source_ws.cell(row=source_row, column=column).value
+                for column in range(1, len(OUTPUT_HEADERS) + 1)
+            ]
+            if not any(value is not None and value != "" for value in values):
                 continue
-            ws.append(list(row))
+
+            project_row = ws.max_row + 1
+            for column in range(1, len(OUTPUT_HEADERS) + 1):
+                source_coordinate = source_ws.cell(
+                    row=source_row,
+                    column=column,
+                ).coordinate
+                source_reference = f"{sheet_ref}!{source_coordinate}"
+                ws.cell(
+                    row=project_row,
+                    column=column,
+                    value=f'=IF({source_reference}="","",{source_reference})',
+                )
             project_rows += 1
 
     style_output_sheet(ws)

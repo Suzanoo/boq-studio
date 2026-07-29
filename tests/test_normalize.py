@@ -85,17 +85,19 @@ def test_project_sheet_combines_normalized_sheets_in_selected_order(tmp_path: Pa
     ]
     normalize_workbook(NormalizeRequest(source, output, configs))
 
-    out = load_workbook(output, data_only=True)
+    out = load_workbook(output, data_only=False)
     assert out.sheetnames[:3] == ["LOG", "SUMMARY", "Project"]
     project = out["Project"]
     assert project.max_row == 3
-    assert project["E2"].value == "Arch"
-    assert project["H2"].value == "งานสถาปัตย์"
-    assert project["M2"].value == 1000
-    assert project["E3"].value == "Structure"
-    assert project["H3"].value == "งานโครงสร้าง"
-    assert project["M3"].value == 2000
+    assert project["A2"].value == '=IF(\'Arch\'!A2="","",\'Arch\'!A2)'
+    assert project["E2"].value == '=IF(\'Arch\'!E2="","",\'Arch\'!E2)'
+    assert project["H2"].value == '=IF(\'Arch\'!H2="","",\'Arch\'!H2)'
+    assert project["M2"].value == '=IF(\'Arch\'!M2="","",\'Arch\'!M2)'
+    assert project["E3"].value == '=IF(\'Structure\'!E2="","",\'Structure\'!E2)'
+    assert project["H3"].value == '=IF(\'Structure\'!H2="","",\'Structure\'!H2)'
+    assert project["M3"].value == '=IF(\'Structure\'!M2="","",\'Structure\'!M2)'
     assert out["LOG"]["B4"].value == 2
+
 
 
 def test_summary_sheet_uses_live_formulas(tmp_path: Path):
