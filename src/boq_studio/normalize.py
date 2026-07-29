@@ -33,15 +33,6 @@ OUTPUT_HEADERS = [
     "Source Row",
 ]
 
-TOTAL_WORDS = (
-    "รวม",
-    "รวมเป็นเงิน",
-    "รวมทั้งสิ้น",
-    "ยอดรวม",
-    "subtotal",
-    "grand total",
-    "total",
-)
 NOTE_WORDS = ("หมายเหตุ", "note", "remark")
 
 
@@ -85,9 +76,29 @@ def numbering_level(text: str) -> int | None:
     return None
 
 
-def is_total(description: str) -> bool:
-    lowered = description.casefold()
-    return any(word in lowered for word in TOTAL_WORDS)
+def is_blank_value(value: Any) -> bool:
+    """Return True for cells that are structurally empty in a BOQ row."""
+    return value is None or safe_text(value) == ""
+
+
+def is_total_row(ws, row: int, cfg: SheetConfig, description: str) -> bool:
+    """Detect summary rows from BOQ structure instead of language keywords.
+
+    A total/summary row has a description and an amount, but no unit and no
+    quantity. This works for Thai, English, and mixed-language BOQs while
+    preserving valid item descriptions that happen to contain words such as
+    ``รวม`` or ``total``.
+    """
+    if not description or not cfg.amount_col:
+        return False
+
+    amount = safe_number(ws.cell(row, cfg.amount_col).value)
+    if amount is None:
+        return False
+
+    unit_value = ws.cell(row, cfg.unit_col).value if cfg.unit_col else None
+    qty_value = ws.cell(row, cfg.qty_col).value if cfg.qty_col else None
+    return is_blank_value(unit_value) and is_blank_value(qty_value)
 
 
 def is_note(description: str) -> bool:
@@ -111,7 +122,7 @@ def description_indent_level(ws, row: int, cols: list[int]) -> int:
 def classify_row(ws, row: int, cfg: SheetConfig, description: str) -> str:
     if not description:
         return "EMPTY"
-    if is_total(description):
+    if is_total_row(ws, row, cfg, description):
         return "TOTAL"
     if is_note(description):
         return "NOTE"

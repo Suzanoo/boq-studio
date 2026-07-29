@@ -130,3 +130,46 @@ def test_summary_sheet_uses_live_formulas(tmp_path: Path):
     assert summary["C8"].value == "=SUM('Project'!M2:M3)"
     assert summary["A9"].value == "Difference"
     assert summary["C9"].value == "=C8-C6"
+
+
+def test_total_detection_uses_row_structure_not_description_language(tmp_path: Path):
+    source = tmp_path / "total_structure.xlsx"
+    output = tmp_path / "total_structure_OKD.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "BOQ"
+    ws.append(["No", "Description", "Unit", "Qty", "Material", "Labor", "Amount"])
+    # Valid items: descriptions contain Thai/English total words but Unit/Qty exist.
+    ws.append([1, "AIR SPLIT TYPE รวมอุปกรณ์การติดตั้งพร้อมใช้งาน", "set", 1, 900, 100, 1000])
+    ws.append([2, "Total station equipment", "set", 2, 1500, 500, 2000])
+    ws.append([3, "ค้ำยันเหล็ก (รวมงานฐานราก)", "lot", 1, 2500, 500, 3000])
+    # Actual summary rows: description + amount, but Unit and Qty are blank.
+    ws.append([None, "รวมเป็นเงิน", None, None, None, None, 6000])
+    ws.append([None, "Grand Total", None, None, None, None, 6000])
+    wb.save(source)
+
+    cfg = SheetConfig(
+        sheet_name="BOQ",
+        header_row=1,
+        start_row=2,
+        item_no_col=1,
+        description_cols=[2],
+        unit_col=3,
+        qty_col=4,
+        material_col=5,
+        labor_col=6,
+        amount_col=7,
+    )
+    results = normalize_workbook(NormalizeRequest(source, output, [cfg]))
+
+    assert results[0].output_rows == 3
+    assert results[0].item_rows == 3
+
+    out = load_workbook(output, data_only=True)
+    normalized = out["BOQ"]
+    descriptions = [normalized.cell(row=row, column=8).value for row in range(2, normalized.max_row + 1)]
+    assert "AIR SPLIT TYPE รวมอุปกรณ์การติดตั้งพร้อมใช้งาน" in descriptions
+    assert "Total station equipment" in descriptions
+    assert "ค้ำยันเหล็ก (รวมงานฐานราก)" in descriptions
+    assert "รวมเป็นเงิน" not in descriptions
+    assert "Grand Total" not in descriptions
