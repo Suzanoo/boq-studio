@@ -149,3 +149,16 @@ The repository is initialized. Run `git log --oneline` to see the milestone comm
 - `Difference` should remain zero and helps the user verify manual edits.
 - Totals use Excel formulas and therefore update when the user edits amounts manually.
 - No total rows are inserted into the OKD data sheets, preventing duplicate amounts during import.
+
+## Standard entry-point checks (MS-1)
+
+For development, install the optional test dependency and verify both supported launch methods:
+
+```bash
+pip install -e ".[dev]"
+boq-studio
+python -m boq_studio
+pytest
+```
+
+The `.venv` directory is local to each computer and is intentionally excluded from Git and release ZIP files.

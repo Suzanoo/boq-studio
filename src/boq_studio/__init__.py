@@ -1,3 +1,5 @@
-"""BOQ Studio MS-1.4."""
+"""BOQ Studio package."""
 
-__version__ = "0.1.4"
+__version__ = "0.1.5"
+
+__all__ = ["__version__"]
