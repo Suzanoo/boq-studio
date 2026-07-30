@@ -25,7 +25,7 @@ def default_template_path(workbook_path: Path, sheet_name: str) -> Path:
 
 def save_template(path: Path, cfg: SheetConfig) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {"version": 2, "mapping": asdict(cfg)}
+    payload = {"version": 3, "mapping": asdict(cfg)}
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
@@ -36,4 +36,6 @@ def load_template(path: Path, sheet_name: str | None = None) -> SheetConfig:
         data["sheet_name"] = sheet_name
     overrides = data.get("classification_overrides", {})
     data["classification_overrides"] = {int(row): value for row, value in overrides.items()}
+    levels = data.get("wbs_level_overrides", {})
+    data["wbs_level_overrides"] = {int(row): int(level) for row, level in levels.items()}
     return SheetConfig(**data)

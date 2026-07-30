@@ -18,6 +18,7 @@ class SheetConfig:
     amount_col: int | None = None
     max_wbs_level: int = 4
     classification_overrides: dict[int, str] = field(default_factory=dict)
+    wbs_level_overrides: dict[int, int] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

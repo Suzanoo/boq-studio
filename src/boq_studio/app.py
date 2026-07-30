@@ -227,6 +227,7 @@ class SheetMappingDialog(tk.Toplevel):
             labor_col=self._column_from_label(self.column_vars["labor"].get()),
             amount_col=self._column_from_label(self.column_vars["amount"].get()),
             classification_overrides=dict(self.initial.classification_overrides),
+            wbs_level_overrides=dict(self.initial.wbs_level_overrides),
         )
 
     def _apply_config_to_widgets(self, cfg: SheetConfig, choices: list[str] | None = None) -> None:
@@ -310,9 +311,10 @@ class ClassificationReviewDialog(tk.Toplevel):
         self.grab_set()
         self.input_path = input_path
         self.config = config
-        self.result: dict[int, str] | None = None
+        self.result: tuple[dict[int, str], dict[int, int]] | None = None
         self.rows_by_id: dict[str, object] = {}
         self.overrides = dict(config.classification_overrides)
+        self.level_overrides = dict(config.wbs_level_overrides)
         self.filter_var = tk.StringVar(value="Review needed")
         self.status_var = tk.StringVar(value="")
         self._build()
@@ -336,18 +338,18 @@ class ClassificationReviewDialog(tk.Toplevel):
         filter_box.bind("<<ComboboxSelected>>", lambda _event: self._render())
         ttk.Label(
             top,
-            text="Select rows, then confirm WBS / ITEM / IGNORE. Reset returns to automatic classification.",
+            text="Select rows, then assign WBS-2 / WBS-3 / WBS-4, ITEM or IGNORE.",
         ).pack(side="left", padx=12)
 
-        columns = ("row", "item", "description", "auto", "final", "confidence", "unit", "qty", "amount", "reason")
+        columns = ("row", "item", "description", "auto", "final", "level", "confidence", "unit", "qty", "amount", "reason")
         self.tree = ttk.Treeview(root, columns=columns, show="headings", selectmode="extended")
         headings = {
             "row": "Source Row", "item": "Item No.", "description": "Description",
-            "auto": "Auto", "final": "Final", "confidence": "Confidence",
+            "auto": "Auto", "final": "Final", "level": "WBS Level", "confidence": "Confidence",
             "unit": "Unit", "qty": "Qty", "amount": "Amount", "reason": "Reason",
         }
-        widths = {"row": 85, "item": 110, "description": 360, "auto": 90, "final": 90,
-                  "confidence": 90, "unit": 70, "qty": 90, "amount": 120, "reason": 330}
+        widths = {"row": 85, "item": 110, "description": 330, "auto": 80, "final": 80, "level": 85,
+                  "confidence": 90, "unit": 70, "qty": 90, "amount": 120, "reason": 300}
         for col in columns:
             self.tree.heading(col, text=headings[col])
             self.tree.column(col, width=widths[col], stretch=False, anchor="w")
@@ -360,7 +362,9 @@ class ClassificationReviewDialog(tk.Toplevel):
 
         actions = ttk.Frame(self, padding=(12, 0, 12, 12))
         actions.pack(fill="x")
-        ttk.Button(actions, text="Mark WBS", command=lambda: self._set_selected(RowType.WBS)).pack(side="left")
+        ttk.Button(actions, text="WBS-2", command=lambda: self._set_wbs_level(2)).pack(side="left")
+        ttk.Button(actions, text="WBS-3", command=lambda: self._set_wbs_level(3)).pack(side="left", padx=(6, 0))
+        ttk.Button(actions, text="WBS-4", command=lambda: self._set_wbs_level(4)).pack(side="left", padx=(6, 0))
         ttk.Button(actions, text="Mark ITEM", command=lambda: self._set_selected(RowType.ITEM)).pack(side="left", padx=6)
         ttk.Button(actions, text="Ignore", command=lambda: self._set_selected(RowType.IGNORE)).pack(side="left")
         ttk.Button(actions, text="Reset Auto", command=self._reset_selected).pack(side="left", padx=6)
@@ -372,7 +376,11 @@ class ClassificationReviewDialog(tk.Toplevel):
         wb = load_workbook(self.input_path, read_only=False, data_only=True)
         try:
             ws = wb[self.config.sheet_name]
-            cfg = replace(self.config, classification_overrides=dict(self.overrides))
+            cfg = replace(
+                self.config,
+                classification_overrides=dict(self.overrides),
+                wbs_level_overrides=dict(self.level_overrides),
+            )
             rows = ClassificationReviewService().build_rows(ws, cfg)
         finally:
             wb.close()
@@ -384,10 +392,15 @@ class ClassificationReviewDialog(tk.Toplevel):
         if mode == "All rows":
             return True
         if mode == "Overrides only":
-            return row.source_row in self.overrides
+            return row.source_row in self.overrides or row.source_row in self.level_overrides
         if mode == "UNKNOWN only":
             return row.auto_type == RowType.UNKNOWN
-        return row.auto_type == RowType.UNKNOWN or row.confidence < 0.80 or row.source_row in self.overrides
+        return (
+            row.auto_type == RowType.UNKNOWN
+            or row.confidence < 0.80
+            or row.source_row in self.overrides
+            or row.source_row in self.level_overrides
+        )
 
     def _render(self) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -399,33 +412,47 @@ class ClassificationReviewDialog(tk.Toplevel):
             final = RowType(self.overrides.get(row.source_row, row.auto_type.value))
             iid = str(row.source_row)
             self.rows_by_id[iid] = row
+            level = self.level_overrides.get(row.source_row, row.wbs_level if final == RowType.WBS else None)
             self.tree.insert("", "end", iid=iid, values=(
                 row.source_row, row.item_no, row.description, row.auto_type.value, final.value,
-                f"{row.confidence:.0%}", row.unit, "" if row.qty is None else row.qty,
+                "" if level is None else f"WBS-{level}", f"{row.confidence:.0%}", row.unit, "" if row.qty is None else row.qty,
                 "" if row.amount is None else row.amount, row.reason,
             ))
             visible += 1
-        self.status_var.set(f"{visible} shown · {len(self.overrides)} overrides")
+        override_rows = set(self.overrides) | set(self.level_overrides)
+        self.status_var.set(f"{visible} shown · {len(override_rows)} reviewed rows")
 
     def _set_selected(self, row_type: RowType) -> None:
         for iid in self.tree.selection():
-            self.overrides[int(iid)] = row_type.value
+            source_row = int(iid)
+            self.overrides[source_row] = row_type.value
+            if row_type != RowType.WBS:
+                self.level_overrides.pop(source_row, None)
+        self._render()
+
+    def _set_wbs_level(self, level: int) -> None:
+        for iid in self.tree.selection():
+            source_row = int(iid)
+            self.overrides[source_row] = RowType.WBS.value
+            self.level_overrides[source_row] = level
         self._render()
 
     def _reset_selected(self) -> None:
         for iid in self.tree.selection():
-            self.overrides.pop(int(iid), None)
+            source_row = int(iid)
+            self.overrides.pop(source_row, None)
+            self.level_overrides.pop(source_row, None)
         self._render()
 
     def _save(self) -> None:
-        self.result = dict(self.overrides)
+        self.result = (dict(self.overrides), dict(self.level_overrides))
         self.destroy()
 
 
 class BOQStudioApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("BOQ Studio — MS-3 Review Workspace")
+        self.title("BOQ Studio — MS-4 WBS Level Review")
         self.geometry("980x720")
         self.minsize(840, 620)
         self.input_path: Path | None = None
@@ -558,7 +585,7 @@ class BOQStudioApp(tk.Tk):
         dialog = ClassificationReviewDialog(self, self.input_path, cfg)
         self.wait_window(dialog)
         if dialog.result is not None:
-            cfg.classification_overrides = dialog.result
+            cfg.classification_overrides, cfg.wbs_level_overrides = dialog.result
             try:
                 save_template(default_template_path(self.input_path, name), cfg)
             except OSError:
@@ -568,8 +595,10 @@ class BOQStudioApp(tk.Tk):
     def _refresh_row(self, name: str) -> None:
         cfg = self.configs.get(name)
         mapping = mapping_summary(cfg) if cfg else "Not configured"
-        if cfg and cfg.classification_overrides:
-            mapping += f" · Review {len(cfg.classification_overrides)}"
+        if cfg:
+            reviewed = set(cfg.classification_overrides) | set(cfg.wbs_level_overrides)
+            if reviewed:
+                mapping += f" · Review {len(reviewed)}"
         self.sheet_tree.item(name, values=("✓" if self.sheet_vars[name].get() else "", name, mapping))
 
     def run_normalize(self) -> None:

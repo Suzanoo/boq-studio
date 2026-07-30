@@ -24,7 +24,7 @@ def normalize_sheet(source_ws, output_ws, cfg: SheetConfig, progress: ProgressCa
     result = SheetResult(sheet_name=cfg.sheet_name, status="OK")
     extractor = SheetExtractor()
     classifier = RowClassifier()
-    builder = WBSBuilder()
+    builder = WBSBuilder(cfg.sheet_name)
     total_rows = max(0, source_ws.max_row - cfg.start_row + 1)
 
     output_ws.append(OUTPUT_HEADERS)
@@ -41,7 +41,8 @@ def normalize_sheet(source_ws, output_ws, cfg: SheetConfig, progress: ProgressCa
             result.skipped_rows += 1
         elif row_type in {RowType.WBS, RowType.UNKNOWN}:
             forced_wbs = row_type == RowType.WBS and decision.row_type != RowType.WBS
-            if builder.accept_heading(extracted, forced=forced_wbs):
+            level_override = cfg.wbs_level_overrides.get(extracted.source_row)
+            if builder.accept_heading(extracted, forced=forced_wbs, level_override=level_override):
                 result.wbs_rows += 1
             result.skipped_rows += 1
         elif extracted.amount is None or extracted.amount <= 0:
@@ -65,14 +66,19 @@ def normalized_preview_rows(source_ws, cfg: SheetConfig, limit: int = 60) -> lis
     rows: list[list[object]] = []
     extractor = SheetExtractor()
     classifier = RowClassifier()
-    builder = WBSBuilder()
+    builder = WBSBuilder(cfg.sheet_name)
     for extracted in extractor.extract(source_ws, cfg):
         decision = classifier.classify_result(extracted)
         row_type = resolve_row_type(decision, extracted.source_row, cfg.classification_overrides)
         if row_type in {RowType.EMPTY, RowType.TOTAL, RowType.NOTE, RowType.IGNORE}:
             continue
         if row_type in {RowType.WBS, RowType.UNKNOWN}:
-            builder.accept_heading(extracted)
+            forced_wbs = row_type == RowType.WBS and decision.row_type != RowType.WBS
+            builder.accept_heading(
+                extracted,
+                forced=forced_wbs,
+                level_override=cfg.wbs_level_overrides.get(extracted.source_row),
+            )
             continue
         if extracted.amount is None or extracted.amount <= 0:
             continue

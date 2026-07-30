@@ -8,6 +8,7 @@ from .values import numbering_level
 
 @dataclass(slots=True)
 class WBSState:
+    wbs2: str = ""
     wbs3: str = ""
     wbs4: str = ""
     parent_code: str = ""
@@ -15,37 +16,52 @@ class WBSState:
     child_counter: int = 0
 
 
+def infer_wbs_level(row: ExtractedRow) -> int | None:
+    """Map legacy numbering signals to output WBS levels.
+
+    A top-level heading inside a breakdown sheet becomes WBS-3 because WBS-2
+    defaults to the sheet name. Deeper numbered headings become WBS-4.
+    """
+    level = numbering_level(row.item_no) or numbering_level(row.description)
+    if level == 1:
+        return 3
+    if level is not None:
+        return 4
+    return None
+
+
 class WBSBuilder:
-    """Stateful legacy-compatible WBS projection isolated from classification."""
+    """Project reviewed headings into WBS-2/WBS-3/WBS-4 state."""
 
-    def __init__(self) -> None:
-        self.state = WBSState()
+    def __init__(self, sheet_name: str = "") -> None:
+        self.state = WBSState(wbs2=sheet_name)
 
-    def accept_heading(self, row: ExtractedRow, forced: bool = False) -> bool:
-        level = numbering_level(row.item_no) or numbering_level(row.description)
-        if level == 1:
+    def accept_heading(
+        self,
+        row: ExtractedRow,
+        forced: bool = False,
+        level_override: int | None = None,
+    ) -> bool:
+        level = level_override or infer_wbs_level(row)
+        if level is None and forced:
+            level = 3
+        if level not in {2, 3, 4}:
+            return False
+
+        if level == 2:
+            self.state.wbs2 = row.description
+            self.state.wbs3 = ""
+            self.state.wbs4 = ""
+        elif level == 3:
             self.state.wbs3 = row.description
             self.state.wbs4 = ""
-            self.state.parent_code = row.item_no or str(self.state.parent_counter + 1)
-            self.state.parent_counter += 1
-            self.state.child_counter = 0
-            return True
-        if level is not None:
+        else:
             self.state.wbs4 = row.description
-            if row.item_no:
-                self.state.parent_code = row.item_no
-            self.state.child_counter = 0
-            return True
-        if forced:
-            # MS-3 confirms that this text-only row is a heading. Level review is
-            # handled by the next milestone; use WBS-3 as the safe default.
-            self.state.wbs3 = row.description
-            self.state.wbs4 = ""
-            self.state.parent_counter += 1
-            self.state.parent_code = str(self.state.parent_counter)
-            self.state.child_counter = 0
-            return True
-        return False
+
+        self.state.parent_counter += 1
+        self.state.parent_code = row.item_no or str(self.state.parent_counter)
+        self.state.child_counter = 0
+        return True
 
     def build_item(self, row: ExtractedRow, sheet_name: str) -> list[object]:
         if self.state.parent_counter == 0:
@@ -57,12 +73,14 @@ class WBSBuilder:
             if (numbering_level(row.item_no) or 0) >= 2
             else f"{self.state.parent_code or self.state.parent_counter}.{self.state.child_counter}"
         )
+        effective_wbs2 = self.state.wbs2 or sheet_name
+        item_level = 4 if self.state.wbs4 else 3
         return [
             code,
-            4 if self.state.wbs4 else 3,
+            item_level,
             "ITEM",
             "Project",
-            sheet_name,
+            effective_wbs2,
             self.state.wbs3,
             self.state.wbs4,
             row.description,
