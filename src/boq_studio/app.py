@@ -498,7 +498,7 @@ class DraftTreeDialog(tk.Toplevel):
 
         table = ttk.Frame(root)
         table.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(table, columns=("type", "wbs_level", "amount", "source"), show="tree headings", selectmode="browse")
+        self.tree = ttk.Treeview(table, columns=("type", "wbs_level", "amount", "source"), show="tree headings", selectmode="extended")
         self.tree.heading("#0", text="Description")
         self.tree.heading("type", text="Type")
         self.tree.heading("wbs_level", text="WBS Level")
@@ -525,15 +525,15 @@ class DraftTreeDialog(tk.Toplevel):
         ttk.Button(actions, text="Outdent", command=self._outdent).pack(side="left", padx=(6, 0))
         ttk.Button(actions, text="Move Up", command=self._move_up).pack(side="left", padx=(12, 0))
         ttk.Button(actions, text="Move Down", command=self._move_down).pack(side="left", padx=(6, 0))
-        ttk.Button(actions, text="Mark WBS", command=self._mark_wbs).pack(side="left", padx=(12, 0))
+        ttk.Button(actions, text="WBS ↔ ITEM", command=self._mark_wbs).pack(side="left", padx=(12, 0))
         ttk.Button(actions, text="Create WBS", command=self._create_wbs).pack(side="left", padx=(6, 0))
-        ttk.Button(actions, text="Rename", command=self._rename).pack(side="left", padx=(6, 0))
+        ttk.Button(actions, text="Edit Description", command=self._rename).pack(side="left", padx=(6, 0))
         ttk.Button(actions, text="Delete Row", command=self._delete).pack(side="left", padx=(6, 0))
         ttk.Label(actions, textvariable=self.status_var).pack(side="left", padx=14)
         ttk.Button(actions, text="Cancel", command=self.destroy).pack(side="right")
         ttk.Button(actions, text="Use this tree", command=self._save, style="Accent.TButton").pack(side="right", padx=6)
 
-    def _render(self, select_id: str | None = None) -> None:
+    def _render(self, select_ids: list[str] | None = None) -> None:
         self.tree.delete(*self.tree.get_children())
 
         def insert(parent_iid: str, node) -> None:
@@ -561,17 +561,28 @@ class DraftTreeDialog(tk.Toplevel):
             insert(root_iid, child)
         count = sum(1 for _ in self.draft_tree.walk())
         self.status_var.set(f"{count} nodes")
-        if select_id and self.tree.exists(select_id):
-            self.tree.selection_set(select_id)
-            self.tree.focus(select_id)
-            self.tree.see(select_id)
+        visible = [node_id for node_id in (select_ids or []) if self.tree.exists(node_id)]
+        if visible:
+            self.tree.selection_set(visible)
+            self.tree.focus(visible[0])
+            self.tree.see(visible[0])
+
+    def _selected_ids(self, *, require_one: bool = True) -> list[str]:
+        selected = [
+            node_id
+            for node_id in self.tree.selection()
+            if node_id != self.draft_tree.root.node_id
+        ]
+        if require_one and not selected:
+            messagebox.showwarning("Select row", "Select one or more tree rows first.", parent=self)
+        return selected
 
     def _selected_id(self) -> str | None:
-        selected = self.tree.selection()
+        selected = self._selected_ids()
         if not selected:
-            messagebox.showwarning("Select row", "Select one tree row first.", parent=self)
             return None
-        if selected[0] == self.draft_tree.root.node_id:
+        if len(selected) != 1:
+            messagebox.showwarning("Select one row", "This action requires exactly one selected row.", parent=self)
             return None
         return selected[0]
 
@@ -581,7 +592,7 @@ class DraftTreeDialog(tk.Toplevel):
         except TreeEditError as exc:
             messagebox.showwarning("Cannot edit tree", str(exc), parent=self)
             return
-        self._render(select_id=node_id)
+        self._render(select_ids=[node_id])
 
     def _indent(self) -> None:
         node_id = self._selected_id()
@@ -594,23 +605,41 @@ class DraftTreeDialog(tk.Toplevel):
             self._run_edit(self.editor.outdent, node_id)
 
     def _move_up(self) -> None:
-        node_id = self._selected_id()
-        if node_id:
-            self._run_edit(self.editor.move_up, node_id)
+        node_ids = self._selected_ids()
+        if not node_ids:
+            return
+        try:
+            self.editor.move_nodes_up(node_ids)
+        except TreeEditError as exc:
+            messagebox.showwarning("Cannot move rows", str(exc), parent=self)
+            return
+        self._render(select_ids=node_ids)
 
     def _move_down(self) -> None:
-        node_id = self._selected_id()
-        if node_id:
-            self._run_edit(self.editor.move_down, node_id)
+        node_ids = self._selected_ids()
+        if not node_ids:
+            return
+        try:
+            self.editor.move_nodes_down(node_ids)
+        except TreeEditError as exc:
+            messagebox.showwarning("Cannot move rows", str(exc), parent=self)
+            return
+        self._render(select_ids=node_ids)
 
     def _mark_wbs(self) -> None:
-        node_id = self._selected_id()
-        if node_id:
-            self._run_edit(self.editor.mark_as_wbs, node_id)
+        node_ids = self._selected_ids()
+        if not node_ids:
+            return
+        try:
+            self.editor.toggle_wbs_item(node_ids)
+        except TreeEditError as exc:
+            messagebox.showwarning("Cannot toggle WBS / ITEM", str(exc), parent=self)
+            return
+        self._render(select_ids=node_ids)
 
     def _create_wbs(self) -> None:
         selected = self.tree.selection()
-        selected_id = selected[0] if selected and selected[0] != self.draft_tree.root.node_id else None
+        selected_id = selected[0] if len(selected) == 1 and selected[0] != self.draft_tree.root.node_id else None
         name = simpledialog.askstring("Create WBS", "WBS description", parent=self)
         if name is None:
             return
@@ -619,42 +648,44 @@ class DraftTreeDialog(tk.Toplevel):
         except TreeEditError as exc:
             messagebox.showwarning("Cannot create WBS", str(exc), parent=self)
             return
-        self._render(select_id=node.node_id)
+        self._render(select_ids=[node.node_id])
 
     def _rename(self) -> None:
         node_id = self._selected_id()
         if not node_id:
             return
         node = self.draft_tree.find(node_id)
-        if node is None or not node.is_wbs:
-            messagebox.showwarning("Rename WBS", "Select a WBS row to rename.", parent=self)
+        if node is None:
             return
-        name = simpledialog.askstring("Rename WBS", "WBS description", initialvalue=node.description, parent=self)
+        name = simpledialog.askstring(
+            "Edit Description",
+            "Description",
+            initialvalue=node.description,
+            parent=self,
+        )
         if name is None:
             return
         try:
-            self.editor.rename_wbs(node_id, name)
+            self.editor.rename_node(node_id, name)
         except TreeEditError as exc:
-            messagebox.showwarning("Cannot rename WBS", str(exc), parent=self)
+            messagebox.showwarning("Cannot edit description", str(exc), parent=self)
             return
-        self._render(select_id=node_id)
+        self._render(select_ids=[node_id])
 
     def _delete(self) -> None:
-        node_id = self._selected_id()
-        if not node_id:
+        node_ids = self._selected_ids()
+        if not node_ids:
             return
-        node = self.draft_tree.find(node_id)
-        description = node.description if node is not None else "this row"
         if not messagebox.askyesno(
-            "Delete row",
-            f"Remove this row from the output tree?\n\n{description}",
+            "Delete rows",
+            f"Remove {len(node_ids)} selected row(s) from the output tree?",
             parent=self,
         ):
             return
         try:
-            self.editor.delete_node(node_id)
+            self.editor.delete_nodes(node_ids)
         except TreeEditError as exc:
-            messagebox.showwarning("Cannot delete row", str(exc), parent=self)
+            messagebox.showwarning("Cannot delete rows", str(exc), parent=self)
             return
         self._render()
 

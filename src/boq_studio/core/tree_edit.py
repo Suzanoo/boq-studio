@@ -94,21 +94,25 @@ class DraftTreeEditor:
         location.parent.children.insert(location.index, node)
         return node
 
+    def rename_node(self, node_id: str, description: str) -> None:
+        """Edit the description of any non-root tree node."""
+        node = self.tree.find(node_id)
+        if node is None or node.node_type == TreeNodeType.SHEET_ROOT:
+            raise TreeEditError("The selected row cannot be renamed.")
+        description = description.strip()
+        if not description:
+            raise TreeEditError("Description cannot be blank.")
+        node.description = description
+
     def rename_wbs(self, node_id: str, description: str) -> None:
+        """Rename only a WBS node; retained for backward compatibility."""
         node = self.tree.find(node_id)
         if node is None or not node.is_wbs:
             raise TreeEditError("Only WBS nodes can be renamed.")
-        description = description.strip()
-        if not description:
-            raise TreeEditError("WBS description cannot be blank.")
-        node.description = description
+        self.rename_node(node_id, description)
 
     def mark_as_wbs(self, node_id: str) -> None:
-        """Convert a selected source row into a WBS heading.
-
-        The sheet root is WBS-2, therefore editable tree headings may only be
-        WBS-3 (root child) or WBS-4 (child of a WBS-3 node).
-        """
+        """Convert a selected source row into a WBS heading."""
         location = self._required_location(node_id)
         node = location.parent.children[location.index]
         parent = location.parent
@@ -120,6 +124,48 @@ class DraftTreeEditor:
         node.node_type = TreeNodeType.WBS
         node.confidence = 1.0
         node.reason = "Marked as WBS by user"
+
+    def mark_as_item(self, node_id: str) -> None:
+        """Convert a selected WBS heading back into an ITEM row."""
+        location = self._required_location(node_id)
+        node = location.parent.children[location.index]
+        node.node_type = TreeNodeType.ITEM
+        node.confidence = 1.0
+        node.reason = "Marked as ITEM by user"
+
+    def toggle_wbs_item(self, node_ids: list[str]) -> TreeNodeType:
+        """Toggle selected rows between WBS and ITEM.
+
+        If every selected row is currently WBS, all become ITEM. Otherwise all
+        selected rows become WBS. This makes mixed selections deterministic.
+        """
+        unique_ids = list(dict.fromkeys(node_ids))
+        if not unique_ids:
+            raise TreeEditError("Select at least one row.")
+        nodes = []
+        for node_id in unique_ids:
+            node = self.tree.find(node_id)
+            if node is None or node.node_type == TreeNodeType.SHEET_ROOT:
+                raise TreeEditError("The selected row cannot be toggled.")
+            nodes.append(node)
+
+        target = TreeNodeType.ITEM if all(node.is_wbs for node in nodes) else TreeNodeType.WBS
+        if target == TreeNodeType.WBS:
+            # Validate every row first so the operation is atomic.
+            for node_id in unique_ids:
+                location = self._required_location(node_id)
+                parent = location.parent
+                if parent.node_type != TreeNodeType.SHEET_ROOT and not parent.is_wbs:
+                    raise TreeEditError("A WBS row must be placed under the sheet or another WBS row.")
+                level = 2 + self.depth(node_id)
+                if level not in {3, 4}:
+                    raise TreeEditError("Only WBS-3 and WBS-4 are supported.")
+            for node_id in unique_ids:
+                self.mark_as_wbs(node_id)
+        else:
+            for node_id in unique_ids:
+                self.mark_as_item(node_id)
+        return target
 
     def wbs_level(self, node_id: str) -> int | None:
         node = self.tree.find(node_id)
@@ -147,6 +193,62 @@ class DraftTreeEditor:
             siblings[location.index + 1],
             siblings[location.index],
         )
+
+
+    def move_nodes_up(self, node_ids: list[str]) -> None:
+        """Move selected sibling rows up one position while preserving order."""
+        self._move_selected(node_ids, direction=-1)
+
+    def move_nodes_down(self, node_ids: list[str]) -> None:
+        """Move selected sibling rows down one position while preserving order."""
+        self._move_selected(node_ids, direction=1)
+
+    def delete_nodes(self, node_ids: list[str]) -> None:
+        """Delete multiple rows safely, promoting each row's children."""
+        unique_ids = list(dict.fromkeys(node_ids))
+        # Delete descendants before ancestors and later siblings before earlier
+        # siblings. This keeps all remaining node locations valid while editing.
+        ordered = sorted(
+            unique_ids,
+            key=lambda node_id: (self.depth(node_id), self._required_location(node_id).index),
+            reverse=True,
+        )
+        for node_id in ordered:
+            if self.locate(node_id) is not None:
+                self.delete_node(node_id)
+
+    def _move_selected(self, node_ids: list[str], direction: int) -> None:
+        if not node_ids:
+            raise TreeEditError("Select at least one row.")
+        groups: dict[str, tuple[DraftTreeNode, set[str]]] = {}
+        for node_id in dict.fromkeys(node_ids):
+            location = self._required_location(node_id)
+            key = location.parent.node_id
+            if key not in groups:
+                groups[key] = (location.parent, set())
+            groups[key][1].add(node_id)
+
+        moved = False
+        for parent, selected_ids in groups.values():
+            siblings = parent.children
+            selected_indexes = {i for i, node in enumerate(siblings) if node.node_id in selected_ids}
+            if direction < 0:
+                for index in range(1, len(siblings)):
+                    if index in selected_indexes and index - 1 not in selected_indexes:
+                        siblings[index - 1], siblings[index] = siblings[index], siblings[index - 1]
+                        selected_indexes.remove(index)
+                        selected_indexes.add(index - 1)
+                        moved = True
+            else:
+                for index in range(len(siblings) - 2, -1, -1):
+                    if index in selected_indexes and index + 1 not in selected_indexes:
+                        siblings[index], siblings[index + 1] = siblings[index + 1], siblings[index]
+                        selected_indexes.remove(index)
+                        selected_indexes.add(index + 1)
+                        moved = True
+        if not moved:
+            edge = "first" if direction < 0 else "last"
+            raise TreeEditError(f"The selected rows are already at the {edge} available position.")
 
     def delete_node(self, node_id: str) -> None:
         location = self._required_location(node_id)
