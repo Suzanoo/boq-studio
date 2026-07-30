@@ -42,6 +42,7 @@ class DraftTreeNode:
     item_no: str = ""
     confidence: float = 1.0
     reason: str = ""
+    amount: float | None = None
     children: list["DraftTreeNode"] = field(default_factory=list)
 
     def add_child(self, node: "DraftTreeNode") -> None:
@@ -135,6 +136,7 @@ class DraftTreeBuilder:
                 item_no=row.item_no,
                 confidence=decision.confidence,
                 reason=decision.reason,
+                amount=row.amount,
             )
 
             if row_type == RowType.WBS:

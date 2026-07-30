@@ -497,14 +497,16 @@ class DraftTreeDialog(tk.Toplevel):
 
         table = ttk.Frame(root)
         table.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(table, columns=("type", "item", "source"), show="tree headings", selectmode="browse")
+        self.tree = ttk.Treeview(table, columns=("type", "item", "amount", "source"), show="tree headings", selectmode="browse")
         self.tree.heading("#0", text="Description")
         self.tree.heading("type", text="Type")
         self.tree.heading("item", text="Item No.")
+        self.tree.heading("amount", text="Amount")
         self.tree.heading("source", text="Source Row")
         self.tree.column("#0", width=650, minwidth=300, stretch=True)
         self.tree.column("type", width=110, stretch=False)
         self.tree.column("item", width=110, stretch=False)
+        self.tree.column("amount", width=130, stretch=False, anchor="e")
         self.tree.column("source", width=90, stretch=False, anchor="center")
         ybar = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
         xbar = ttk.Scrollbar(table, orient="horizontal", command=self.tree.xview)
@@ -520,9 +522,11 @@ class DraftTreeDialog(tk.Toplevel):
         actions.pack(fill="x", pady=(10, 0))
         ttk.Button(actions, text="Indent", command=self._indent).pack(side="left")
         ttk.Button(actions, text="Outdent", command=self._outdent).pack(side="left", padx=(6, 0))
+        ttk.Button(actions, text="Move Up", command=self._move_up).pack(side="left", padx=(12, 0))
+        ttk.Button(actions, text="Move Down", command=self._move_down).pack(side="left", padx=(6, 0))
         ttk.Button(actions, text="Create WBS", command=self._create_wbs).pack(side="left", padx=(12, 0))
         ttk.Button(actions, text="Rename", command=self._rename).pack(side="left", padx=(6, 0))
-        ttk.Button(actions, text="Delete WBS", command=self._delete).pack(side="left", padx=(6, 0))
+        ttk.Button(actions, text="Delete Row", command=self._delete).pack(side="left", padx=(6, 0))
         ttk.Label(actions, textvariable=self.status_var).pack(side="left", padx=14)
         ttk.Button(actions, text="Cancel", command=self.destroy).pack(side="right")
         ttk.Button(actions, text="Use this tree", command=self._save, style="Accent.TButton").pack(side="right", padx=6)
@@ -538,14 +542,19 @@ class DraftTreeDialog(tk.Toplevel):
                 "end",
                 iid=iid,
                 text=node.description,
-                values=(label, node.item_no, "" if node.source_row is None else node.source_row),
+                values=(
+                    label,
+                    node.item_no,
+                    "" if node.amount is None else f"{node.amount:,.2f}",
+                    "" if node.source_row is None else node.source_row,
+                ),
                 open=node.is_wbs,
             )
             for child in node.children:
                 insert(iid, child)
 
         root_iid = self.draft_tree.root.node_id
-        self.tree.insert("", "end", iid=root_iid, text=self.draft_tree.sheet_name, values=("WBS-2 / Sheet", "", ""), open=True)
+        self.tree.insert("", "end", iid=root_iid, text=self.draft_tree.sheet_name, values=("WBS-2 / Sheet", "", "", ""), open=True)
         for child in self.draft_tree.root.children:
             insert(root_iid, child)
         count = sum(1 for _ in self.draft_tree.walk())
@@ -582,6 +591,16 @@ class DraftTreeDialog(tk.Toplevel):
         if node_id:
             self._run_edit(self.editor.outdent, node_id)
 
+    def _move_up(self) -> None:
+        node_id = self._selected_id()
+        if node_id:
+            self._run_edit(self.editor.move_up, node_id)
+
+    def _move_down(self) -> None:
+        node_id = self._selected_id()
+        if node_id:
+            self._run_edit(self.editor.move_down, node_id)
+
     def _create_wbs(self) -> None:
         selected = self.tree.selection()
         selected_id = selected[0] if selected and selected[0] != self.draft_tree.root.node_id else None
@@ -617,10 +636,18 @@ class DraftTreeDialog(tk.Toplevel):
         node_id = self._selected_id()
         if not node_id:
             return
+        node = self.draft_tree.find(node_id)
+        description = node.description if node is not None else "this row"
+        if not messagebox.askyesno(
+            "Delete row",
+            f"Remove this row from the output tree?\n\n{description}",
+            parent=self,
+        ):
+            return
         try:
-            self.editor.delete_virtual_wbs(node_id)
+            self.editor.delete_node(node_id)
         except TreeEditError as exc:
-            messagebox.showwarning("Cannot delete WBS", str(exc), parent=self)
+            messagebox.showwarning("Cannot delete row", str(exc), parent=self)
             return
         self._render()
 
@@ -632,7 +659,7 @@ class DraftTreeDialog(tk.Toplevel):
 class BOQStudioApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("BOQ Studio — MS-5.4 Draft Tree Editor")
+        self.title("BOQ Studio — Draft Tree Export")
         self.geometry("980x720")
         self.minsize(840, 620)
         self.input_path: Path | None = None
@@ -820,7 +847,12 @@ class BOQStudioApp(tk.Tk):
         while output.exists():
             output = desktop / f"{stem}_OKD_{suffix}.xlsx"
             suffix += 1
-        request = NormalizeRequest(self.input_path, output, [self.configs[name] for name in selected])
+        request = NormalizeRequest(
+            self.input_path,
+            output,
+            [self.configs[name] for name in selected],
+            draft_trees={name: self.draft_trees[name] for name in selected if name in self.draft_trees},
+        )
         self.run_button.configure(state="disabled")
         self.progress["value"] = 0
         self.status_label.configure(text="Starting…")

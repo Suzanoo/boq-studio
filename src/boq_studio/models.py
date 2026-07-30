@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .core.tree import DraftTree
 from pathlib import Path
 
 
@@ -26,6 +30,7 @@ class NormalizeRequest:
     input_path: Path
     output_path: Path
     sheets: list[SheetConfig]
+    draft_trees: dict[str, "DraftTree"] = field(default_factory=dict)
 
 
 @dataclass(slots=True)

@@ -11,6 +11,7 @@ from ..models import NormalizeRequest, SheetConfig, SheetResult
 from .classification import RowClassifier, RowType, resolve_row_type
 from .extraction import SheetExtractor
 from .wbs import WBSBuilder
+from .tree import DraftTree, DraftTreeNode, TreeNodeType
 
 ProgressCallback = Callable[[int, int, str], None]
 
@@ -63,6 +64,74 @@ def normalize_sheet(source_ws, output_ws, cfg: SheetConfig, progress: ProgressCa
     return result
 
 
+
+def normalize_sheet_from_tree(
+    source_ws,
+    output_ws,
+    cfg: SheetConfig,
+    draft_tree: DraftTree,
+    progress: ProgressCallback | None = None,
+) -> SheetResult:
+    """Export one sheet using the user-approved Draft Tree as source of truth."""
+
+    result = SheetResult(sheet_name=cfg.sheet_name, status="OK")
+    extractor = SheetExtractor()
+    extracted = {row.source_row: row for row in extractor.extract(source_ws, cfg)}
+    result.source_rows = len(extracted)
+
+    output_ws.append(OUTPUT_HEADERS)
+    for cell in output_ws[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    item_counter = 0
+    nodes = list(draft_tree.walk())
+    total_nodes = len(nodes)
+
+    def visit(node: DraftTreeNode, wbs3: str = "", wbs4: str = "", depth: int = 1) -> None:
+        nonlocal item_counter
+        next_wbs3, next_wbs4 = wbs3, wbs4
+        if node.is_wbs:
+            result.wbs_rows += 1
+            if depth <= 1:
+                next_wbs3 = node.description
+                next_wbs4 = ""
+            else:
+                next_wbs4 = node.description
+        elif node.node_type == TreeNodeType.ITEM:
+            row = extracted.get(node.source_row or -1)
+            if row is not None and row.amount is not None and row.amount > 0:
+                item_counter += 1
+                code = row.item_no or f"{item_counter}"
+                item_level = 4 if wbs4 else 3
+                output_ws.append([
+                    code, item_level, "ITEM", "Project", cfg.sheet_name, wbs3, wbs4,
+                    row.description, row.unit, row.qty, row.material, row.labor, row.amount,
+                    cfg.sheet_name, row.source_row,
+                ])
+                result.item_rows += 1
+                result.output_rows += 1
+            else:
+                result.skipped_rows += 1
+        else:
+            result.skipped_rows += 1
+
+        for child in node.children:
+            visit(child, next_wbs3, next_wbs4, depth + (1 if node.is_wbs else 0))
+
+    for index, child in enumerate(draft_tree.root.children, start=1):
+        visit(child)
+        if progress:
+            progress(index, max(1, len(draft_tree.root.children)), f"{cfg.sheet_name}: tree node {index}")
+
+    style_output_sheet(output_ws)
+    if result.output_rows == 0:
+        result.status = "WARNING"
+        result.message = "No tree ITEM rows with Amount greater than zero were produced."
+    return result
+
+
 def normalized_preview_rows(source_ws, cfg: SheetConfig, limit: int = 60) -> list[list[object]]:
     rows: list[list[object]] = []
     extractor = SheetExtractor()
@@ -111,7 +180,13 @@ def normalize_workbook(request: NormalizeRequest, progress: ProgressCallback | N
                 progress(int(overall_done * 1000), total_sheets * 1000, message)
 
         try:
-            result = normalize_sheet(source_wb[cfg.sheet_name], target_ws, cfg, sheet_progress)
+            draft_tree = request.draft_trees.get(cfg.sheet_name)
+            if draft_tree is not None:
+                result = normalize_sheet_from_tree(
+                    source_wb[cfg.sheet_name], target_ws, cfg, draft_tree, sheet_progress
+                )
+            else:
+                result = normalize_sheet(source_wb[cfg.sheet_name], target_ws, cfg, sheet_progress)
             results.append(result)
             normalized_sheet_names.append(target_ws.title)
         except Exception as exc:

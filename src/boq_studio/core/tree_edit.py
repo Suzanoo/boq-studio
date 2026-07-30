@@ -19,10 +19,9 @@ class TreeLocation:
 class DraftTreeEditor:
     """Small, UI-independent edit service for a :class:`DraftTree`.
 
-    MS-5.4 intentionally keeps the rules conservative. Only WBS nodes can own
-    siblings through indentation, the sheet root cannot be moved, and source
-    nodes cannot be deleted. Virtual WBS nodes may be removed without losing
-    their children.
+    The sheet root cannot be edited. Any other node may be reordered or
+    removed. Deleting a node promotes its children so a user can discard a
+    heading without accidentally losing the BOQ rows beneath it.
     """
 
     def __init__(self, tree: DraftTree, max_wbs_depth: int = 2) -> None:
@@ -104,12 +103,38 @@ class DraftTreeEditor:
             raise TreeEditError("WBS description cannot be blank.")
         node.description = description
 
+
+    def move_up(self, node_id: str) -> None:
+        location = self._required_location(node_id)
+        if location.index == 0:
+            raise TreeEditError("The row is already first among its siblings.")
+        siblings = location.parent.children
+        siblings[location.index - 1], siblings[location.index] = (
+            siblings[location.index],
+            siblings[location.index - 1],
+        )
+
+    def move_down(self, node_id: str) -> None:
+        location = self._required_location(node_id)
+        siblings = location.parent.children
+        if location.index >= len(siblings) - 1:
+            raise TreeEditError("The row is already last among its siblings.")
+        siblings[location.index], siblings[location.index + 1] = (
+            siblings[location.index + 1],
+            siblings[location.index],
+        )
+
+    def delete_node(self, node_id: str) -> None:
+        location = self._required_location(node_id)
+        node = location.parent.children[location.index]
+        location.parent.children[location.index: location.index + 1] = node.children
+
     def delete_virtual_wbs(self, node_id: str) -> None:
         location = self._required_location(node_id)
         node = location.parent.children[location.index]
         if node.node_type != TreeNodeType.VIRTUAL_WBS:
             raise TreeEditError("Only a user-created WBS can be deleted.")
-        location.parent.children[location.index: location.index + 1] = node.children
+        self.delete_node(node_id)
 
     def _required_location(self, node_id: str) -> TreeLocation:
         location = self.locate(node_id)
