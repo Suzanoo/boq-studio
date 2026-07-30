@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import queue
+from dataclasses import replace
 import threading
 import tkinter as tk
 from pathlib import Path
@@ -9,6 +10,8 @@ from tkinter import filedialog, messagebox, ttk
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
+from .core.classification import RowType
+from .core.review import ClassificationReviewService
 from .detection import auto_detect_config, mapping_summary
 from .models import NormalizeRequest, SheetConfig
 from .normalize import OUTPUT_HEADERS, normalize_workbook, normalized_preview_rows, safe_text
@@ -223,6 +226,7 @@ class SheetMappingDialog(tk.Toplevel):
             material_col=self._column_from_label(self.column_vars["material"].get()),
             labor_col=self._column_from_label(self.column_vars["labor"].get()),
             amount_col=self._column_from_label(self.column_vars["amount"].get()),
+            classification_overrides=dict(self.initial.classification_overrides),
         )
 
     def _apply_config_to_widgets(self, cfg: SheetConfig, choices: list[str] | None = None) -> None:
@@ -294,10 +298,134 @@ class SheetMappingDialog(tk.Toplevel):
         self.destroy()
 
 
+class ClassificationReviewDialog(tk.Toplevel):
+    EDITABLE_TYPES = (RowType.WBS, RowType.ITEM, RowType.IGNORE)
+
+    def __init__(self, parent: tk.Misc, input_path: Path, config: SheetConfig):
+        super().__init__(parent)
+        self.title(f"Review row types — {config.sheet_name}")
+        self.geometry("1320x760")
+        self.minsize(980, 620)
+        self.transient(parent)
+        self.grab_set()
+        self.input_path = input_path
+        self.config = config
+        self.result: dict[int, str] | None = None
+        self.rows_by_id: dict[str, object] = {}
+        self.overrides = dict(config.classification_overrides)
+        self.filter_var = tk.StringVar(value="Review needed")
+        self.status_var = tk.StringVar(value="")
+        self._build()
+        self._load_rows()
+
+    def _build(self) -> None:
+        root = ttk.Frame(self, padding=12)
+        root.pack(fill="both", expand=True)
+
+        top = ttk.Frame(root)
+        top.pack(fill="x", pady=(0, 8))
+        ttk.Label(top, text="Filter").pack(side="left")
+        filter_box = ttk.Combobox(
+            top,
+            textvariable=self.filter_var,
+            state="readonly",
+            values=("Review needed", "All rows", "Overrides only", "UNKNOWN only"),
+            width=18,
+        )
+        filter_box.pack(side="left", padx=6)
+        filter_box.bind("<<ComboboxSelected>>", lambda _event: self._render())
+        ttk.Label(
+            top,
+            text="Select rows, then confirm WBS / ITEM / IGNORE. Reset returns to automatic classification.",
+        ).pack(side="left", padx=12)
+
+        columns = ("row", "item", "description", "auto", "final", "confidence", "unit", "qty", "amount", "reason")
+        self.tree = ttk.Treeview(root, columns=columns, show="headings", selectmode="extended")
+        headings = {
+            "row": "Source Row", "item": "Item No.", "description": "Description",
+            "auto": "Auto", "final": "Final", "confidence": "Confidence",
+            "unit": "Unit", "qty": "Qty", "amount": "Amount", "reason": "Reason",
+        }
+        widths = {"row": 85, "item": 110, "description": 360, "auto": 90, "final": 90,
+                  "confidence": 90, "unit": 70, "qty": 90, "amount": 120, "reason": 330}
+        for col in columns:
+            self.tree.heading(col, text=headings[col])
+            self.tree.column(col, width=widths[col], stretch=False, anchor="w")
+        ybar = ttk.Scrollbar(root, orient="vertical", command=self.tree.yview)
+        xbar = ttk.Scrollbar(root, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
+        self.tree.pack(fill="both", expand=True, side="left")
+        ybar.pack(fill="y", side="right")
+        xbar.pack(fill="x", side="bottom")
+
+        actions = ttk.Frame(self, padding=(12, 0, 12, 12))
+        actions.pack(fill="x")
+        ttk.Button(actions, text="Mark WBS", command=lambda: self._set_selected(RowType.WBS)).pack(side="left")
+        ttk.Button(actions, text="Mark ITEM", command=lambda: self._set_selected(RowType.ITEM)).pack(side="left", padx=6)
+        ttk.Button(actions, text="Ignore", command=lambda: self._set_selected(RowType.IGNORE)).pack(side="left")
+        ttk.Button(actions, text="Reset Auto", command=self._reset_selected).pack(side="left", padx=6)
+        ttk.Label(actions, textvariable=self.status_var).pack(side="left", padx=14)
+        ttk.Button(actions, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(actions, text="Save review", command=self._save, style="Accent.TButton").pack(side="right", padx=6)
+
+    def _load_rows(self) -> None:
+        wb = load_workbook(self.input_path, read_only=False, data_only=True)
+        try:
+            ws = wb[self.config.sheet_name]
+            cfg = replace(self.config, classification_overrides=dict(self.overrides))
+            rows = ClassificationReviewService().build_rows(ws, cfg)
+        finally:
+            wb.close()
+        self.all_rows = rows
+        self._render()
+
+    def _visible(self, row) -> bool:
+        mode = self.filter_var.get()
+        if mode == "All rows":
+            return True
+        if mode == "Overrides only":
+            return row.source_row in self.overrides
+        if mode == "UNKNOWN only":
+            return row.auto_type == RowType.UNKNOWN
+        return row.auto_type == RowType.UNKNOWN or row.confidence < 0.80 or row.source_row in self.overrides
+
+    def _render(self) -> None:
+        self.tree.delete(*self.tree.get_children())
+        self.rows_by_id.clear()
+        visible = 0
+        for row in self.all_rows:
+            if not self._visible(row):
+                continue
+            final = RowType(self.overrides.get(row.source_row, row.auto_type.value))
+            iid = str(row.source_row)
+            self.rows_by_id[iid] = row
+            self.tree.insert("", "end", iid=iid, values=(
+                row.source_row, row.item_no, row.description, row.auto_type.value, final.value,
+                f"{row.confidence:.0%}", row.unit, "" if row.qty is None else row.qty,
+                "" if row.amount is None else row.amount, row.reason,
+            ))
+            visible += 1
+        self.status_var.set(f"{visible} shown · {len(self.overrides)} overrides")
+
+    def _set_selected(self, row_type: RowType) -> None:
+        for iid in self.tree.selection():
+            self.overrides[int(iid)] = row_type.value
+        self._render()
+
+    def _reset_selected(self) -> None:
+        for iid in self.tree.selection():
+            self.overrides.pop(int(iid), None)
+        self._render()
+
+    def _save(self) -> None:
+        self.result = dict(self.overrides)
+        self.destroy()
+
+
 class BOQStudioApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("BOQ Studio — MS-1.3")
+        self.title("BOQ Studio — MS-3 Review Workspace")
         self.geometry("980x720")
         self.minsize(840, 620)
         self.input_path: Path | None = None
@@ -334,6 +462,7 @@ class BOQStudioApp(tk.Tk):
         toolbar.pack(fill="x", pady=(0, 6))
         ttk.Button(toolbar, text="Select all", command=lambda: self._set_all(True)).pack(side="left")
         ttk.Button(toolbar, text="Clear", command=lambda: self._set_all(False)).pack(side="left", padx=6)
+        ttk.Button(toolbar, text="Review row types…", command=self.review_selected).pack(side="left", padx=(8, 0))
         ttk.Label(toolbar, text="Double-click a sheet to Auto Detect, review and save mapping.").pack(side="right")
 
         self.sheet_tree = ttk.Treeview(sheets_frame, columns=("use", "sheet", "mapping"), show="headings", selectmode="browse")
@@ -415,9 +544,32 @@ class BOQStudioApp(tk.Tk):
             self.sheet_vars[name].set(True)
             self._refresh_row(name)
 
+
+    def review_selected(self) -> None:
+        selection = self.sheet_tree.selection()
+        if not selection or not self.input_path:
+            messagebox.showwarning("Select sheet", "Select one configured sheet first.", parent=self)
+            return
+        name = selection[0]
+        cfg = self.configs.get(name)
+        if cfg is None:
+            messagebox.showwarning("Mapping required", "Double-click the sheet and save its column mapping first.", parent=self)
+            return
+        dialog = ClassificationReviewDialog(self, self.input_path, cfg)
+        self.wait_window(dialog)
+        if dialog.result is not None:
+            cfg.classification_overrides = dialog.result
+            try:
+                save_template(default_template_path(self.input_path, name), cfg)
+            except OSError:
+                pass
+            self._refresh_row(name)
+
     def _refresh_row(self, name: str) -> None:
         cfg = self.configs.get(name)
         mapping = mapping_summary(cfg) if cfg else "Not configured"
+        if cfg and cfg.classification_overrides:
+            mapping += f" · Review {len(cfg.classification_overrides)}"
         self.sheet_tree.item(name, values=("✓" if self.sheet_vars[name].get() else "", name, mapping))
 
     def run_normalize(self) -> None:

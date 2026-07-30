@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .classification import ClassificationResult, RowClassifier, RowType
+from .classification import ClassificationResult, RowClassifier, RowType, resolve_row_type
 from .extraction import ExtractedRow, SheetExtractor
 
 
@@ -17,10 +17,12 @@ class ReviewRow:
     unit: str
     qty: float | None
     amount: float | None
+    auto_type: RowType
+    overridden: bool
 
 
 class ClassificationReviewService:
-    """Prepare classifier decisions for a future user-review workspace."""
+    """Prepare classifier decisions for the user-review workspace."""
 
     def __init__(self, classifier: RowClassifier | None = None) -> None:
         self.classifier = classifier or RowClassifier()
@@ -28,23 +30,31 @@ class ClassificationReviewService:
 
     def build_rows(self, ws, cfg, include_empty: bool = False) -> list[ReviewRow]:
         review_rows: list[ReviewRow] = []
+        overrides = getattr(cfg, "classification_overrides", {})
         for extracted in self.extractor.extract(ws, cfg):
             decision = self.classifier.classify_result(extracted)
-            if not include_empty and decision.row_type == RowType.EMPTY:
+            effective = resolve_row_type(decision, extracted.source_row, overrides)
+            if not include_empty and effective == RowType.EMPTY:
                 continue
-            review_rows.append(self._to_review_row(extracted, decision))
+            review_rows.append(self._to_review_row(extracted, decision, effective))
         return review_rows
 
     @staticmethod
-    def _to_review_row(row: ExtractedRow, decision: ClassificationResult) -> ReviewRow:
+    def _to_review_row(
+        row: ExtractedRow,
+        decision: ClassificationResult,
+        effective: RowType,
+    ) -> ReviewRow:
         return ReviewRow(
             source_row=row.source_row,
             item_no=row.item_no,
             description=row.description,
-            row_type=decision.row_type,
+            row_type=effective,
             confidence=decision.confidence,
             reason=decision.reason,
             unit=row.unit,
             qty=row.qty,
             amount=row.amount,
+            auto_type=decision.row_type,
+            overridden=effective != decision.row_type,
         )

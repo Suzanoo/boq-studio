@@ -8,7 +8,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 from ..models import NormalizeRequest, SheetConfig, SheetResult
-from .classification import RowClassifier, RowType
+from .classification import RowClassifier, RowType, resolve_row_type
 from .extraction import SheetExtractor
 from .wbs import WBSBuilder
 
@@ -35,11 +35,13 @@ def normalize_sheet(source_ws, output_ws, cfg: SheetConfig, progress: ProgressCa
 
     for index, extracted in enumerate(extractor.extract(source_ws, cfg), start=1):
         result.source_rows += 1
-        row_type = classifier.classify(extracted)
-        if row_type in {RowType.EMPTY, RowType.TOTAL, RowType.NOTE}:
+        decision = classifier.classify_result(extracted)
+        row_type = resolve_row_type(decision, extracted.source_row, cfg.classification_overrides)
+        if row_type in {RowType.EMPTY, RowType.TOTAL, RowType.NOTE, RowType.IGNORE}:
             result.skipped_rows += 1
         elif row_type in {RowType.WBS, RowType.UNKNOWN}:
-            if builder.accept_heading(extracted):
+            forced_wbs = row_type == RowType.WBS and decision.row_type != RowType.WBS
+            if builder.accept_heading(extracted, forced=forced_wbs):
                 result.wbs_rows += 1
             result.skipped_rows += 1
         elif extracted.amount is None or extracted.amount <= 0:
@@ -65,8 +67,9 @@ def normalized_preview_rows(source_ws, cfg: SheetConfig, limit: int = 60) -> lis
     classifier = RowClassifier()
     builder = WBSBuilder()
     for extracted in extractor.extract(source_ws, cfg):
-        row_type = classifier.classify(extracted)
-        if row_type in {RowType.EMPTY, RowType.TOTAL, RowType.NOTE}:
+        decision = classifier.classify_result(extracted)
+        row_type = resolve_row_type(decision, extracted.source_row, cfg.classification_overrides)
+        if row_type in {RowType.EMPTY, RowType.TOTAL, RowType.NOTE, RowType.IGNORE}:
             continue
         if row_type in {RowType.WBS, RowType.UNKNOWN}:
             builder.accept_heading(extracted)

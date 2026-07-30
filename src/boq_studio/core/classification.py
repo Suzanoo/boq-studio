@@ -16,6 +16,7 @@ class RowType(StrEnum):
     WBS = "WBS"
     ITEM = "ITEM"
     UNKNOWN = "UNKNOWN"
+    IGNORE = "IGNORE"
 
 
 @dataclass(slots=True, frozen=True)
@@ -23,6 +24,23 @@ class ClassificationResult:
     row_type: RowType
     confidence: float
     reason: str
+
+
+def resolve_row_type(
+    decision: ClassificationResult,
+    source_row: int,
+    overrides: dict[int, str] | None = None,
+) -> RowType:
+    """Return a reviewed row type when a valid override exists."""
+    if not overrides:
+        return decision.row_type
+    raw = overrides.get(source_row)
+    if raw is None:
+        return decision.row_type
+    try:
+        return RowType(raw)
+    except ValueError:
+        return decision.row_type
 
 
 class RowClassifier:

@@ -21,7 +21,7 @@ class WBSBuilder:
     def __init__(self) -> None:
         self.state = WBSState()
 
-    def accept_heading(self, row: ExtractedRow) -> bool:
+    def accept_heading(self, row: ExtractedRow, forced: bool = False) -> bool:
         level = numbering_level(row.item_no) or numbering_level(row.description)
         if level == 1:
             self.state.wbs3 = row.description
@@ -34,6 +34,15 @@ class WBSBuilder:
             self.state.wbs4 = row.description
             if row.item_no:
                 self.state.parent_code = row.item_no
+            self.state.child_counter = 0
+            return True
+        if forced:
+            # MS-3 confirms that this text-only row is a heading. Level review is
+            # handled by the next milestone; use WBS-3 as the safe default.
+            self.state.wbs3 = row.description
+            self.state.wbs4 = ""
+            self.state.parent_counter += 1
+            self.state.parent_code = str(self.state.parent_counter)
             self.state.child_counter = 0
             return True
         return False
