@@ -33,11 +33,12 @@ def normalize_sheet(source_ws, output_ws, cfg: SheetConfig, progress: ProgressCa
         cell.fill = PatternFill("solid", fgColor="1F4E78")
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
-    for index, extracted in enumerate(extractor.extract(source_ws, cfg), start=1):
+    extracted_rows = list(extractor.extract(source_ws, cfg))
+    decisions = classifier.classify_rows(extracted_rows)
+    for index, (extracted, decision) in enumerate(zip(extracted_rows, decisions, strict=True), start=1):
         result.source_rows += 1
-        decision = classifier.classify_result(extracted)
         row_type = resolve_row_type(decision, extracted.source_row, cfg.classification_overrides)
-        if row_type in {RowType.EMPTY, RowType.TOTAL, RowType.NOTE, RowType.IGNORE}:
+        if row_type in {RowType.EMPTY, RowType.TOTAL, RowType.NOTE, RowType.DETAIL, RowType.IGNORE}:
             result.skipped_rows += 1
         elif row_type in {RowType.WBS, RowType.UNKNOWN}:
             forced_wbs = row_type == RowType.WBS and decision.row_type != RowType.WBS
@@ -67,10 +68,11 @@ def normalized_preview_rows(source_ws, cfg: SheetConfig, limit: int = 60) -> lis
     extractor = SheetExtractor()
     classifier = RowClassifier()
     builder = WBSBuilder(cfg.sheet_name)
-    for extracted in extractor.extract(source_ws, cfg):
-        decision = classifier.classify_result(extracted)
+    extracted_rows = list(extractor.extract(source_ws, cfg))
+    decisions = classifier.classify_rows(extracted_rows)
+    for extracted, decision in zip(extracted_rows, decisions, strict=True):
         row_type = resolve_row_type(decision, extracted.source_row, cfg.classification_overrides)
-        if row_type in {RowType.EMPTY, RowType.TOTAL, RowType.NOTE, RowType.IGNORE}:
+        if row_type in {RowType.EMPTY, RowType.TOTAL, RowType.NOTE, RowType.DETAIL, RowType.IGNORE}:
             continue
         if row_type in {RowType.WBS, RowType.UNKNOWN}:
             forced_wbs = row_type == RowType.WBS and decision.row_type != RowType.WBS

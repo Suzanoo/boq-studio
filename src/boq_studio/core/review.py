@@ -36,8 +36,9 @@ class ClassificationReviewService:
         review_rows: list[ReviewRow] = []
         overrides = getattr(cfg, "classification_overrides", {})
         level_overrides = getattr(cfg, "wbs_level_overrides", {})
-        for extracted in self.extractor.extract(ws, cfg):
-            decision = self.classifier.classify_result(extracted)
+        extracted_rows = list(self.extractor.extract(ws, cfg))
+        decisions = self.classifier.classify_rows(extracted_rows)
+        for extracted, decision in zip(extracted_rows, decisions, strict=True):
             effective = resolve_row_type(decision, extracted.source_row, overrides)
             if not include_empty and effective == RowType.EMPTY:
                 continue
