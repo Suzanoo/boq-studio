@@ -1,14 +1,10 @@
-git status
-git checkout -b feat/ms5.4-minimal-tree-editor
-
+# Continue on the current branch. Do not create a new branch.
 pytest
 
 git add src/boq_studio/app.py `
-        src/boq_studio/core/__init__.py `
         src/boq_studio/core/tree_edit.py `
-        tests/test_ms5_4_tree_editor.py `
-        docs/milestones/MS5_4_MINIMAL_TREE_EDITOR.md
+        tests/test_ms5_5_tree_override_export.py `
+        docs/milestones/MS5_5_1_TREE_WBS_CONVERSION.md
 
-git commit -m "feat(ms5.4): add minimal draft tree editor"
-
+git commit -m "feat(tree): allow selected rows to become WBS headings"
 git status

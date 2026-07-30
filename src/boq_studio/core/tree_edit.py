@@ -103,6 +103,30 @@ class DraftTreeEditor:
             raise TreeEditError("WBS description cannot be blank.")
         node.description = description
 
+    def mark_as_wbs(self, node_id: str) -> None:
+        """Convert a selected source row into a WBS heading.
+
+        The sheet root is WBS-2, therefore editable tree headings may only be
+        WBS-3 (root child) or WBS-4 (child of a WBS-3 node).
+        """
+        location = self._required_location(node_id)
+        node = location.parent.children[location.index]
+        parent = location.parent
+        if parent.node_type != TreeNodeType.SHEET_ROOT and not parent.is_wbs:
+            raise TreeEditError("A WBS row must be placed under the sheet or another WBS row.")
+        level = 2 + self.depth(node_id)
+        if level not in {3, 4}:
+            raise TreeEditError("Only WBS-3 and WBS-4 are supported.")
+        node.node_type = TreeNodeType.WBS
+        node.confidence = 1.0
+        node.reason = "Marked as WBS by user"
+
+    def wbs_level(self, node_id: str) -> int | None:
+        node = self.tree.find(node_id)
+        if node is None or not node.is_wbs:
+            return None
+        level = 2 + self.depth(node_id)
+        return level if level in {3, 4} else None
 
     def move_up(self, node_id: str) -> None:
         location = self._required_location(node_id)

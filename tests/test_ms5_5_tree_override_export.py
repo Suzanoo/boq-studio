@@ -97,3 +97,40 @@ def test_tree_export_uses_order_deletion_and_wbs_depth(tmp_path: Path):
     assert ws_out["H2"].value == "Item B"
     assert ws_out["M2"].value == 200
     out.close()
+
+
+def test_mark_selected_row_as_wbs_and_reports_level():
+    item = node("i", TreeNodeType.ITEM, "Floor work")
+    tree = tree_with(item)
+    editor = DraftTreeEditor(tree)
+
+    editor.mark_as_wbs("i")
+
+    assert item.node_type == TreeNodeType.WBS
+    assert editor.wbs_level("i") == 3
+
+
+def test_nested_marked_wbs_is_level_4():
+    parent = node("w", TreeNodeType.WBS, "Architecture")
+    child = node("i", TreeNodeType.ITEM, "Floor")
+    parent.children.append(child)
+    tree = tree_with(parent)
+    editor = DraftTreeEditor(tree)
+
+    editor.mark_as_wbs("i")
+
+    assert child.node_type == TreeNodeType.WBS
+    assert editor.wbs_level("i") == 4
+
+
+def test_mark_wbs_rejects_row_below_non_wbs_parent():
+    detail = node("d", TreeNodeType.DETAIL, "Specification")
+    item = node("i", TreeNodeType.ITEM, "Door", children=[detail])
+    tree = tree_with(item)
+
+    try:
+        DraftTreeEditor(tree).mark_as_wbs("d")
+    except TreeEditError as exc:
+        assert "under the sheet or another WBS" in str(exc)
+    else:
+        raise AssertionError("Expected TreeEditError")
