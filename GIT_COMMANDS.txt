@@ -1,0 +1,14 @@
+git status
+git checkout -b feat/ms5.2-item-number-hierarchy
+
+pytest
+
+git add src/boq_studio/core/__init__.py `
+        src/boq_studio/core/item_numbering.py `
+        src/boq_studio/core/classification.py `
+        tests/test_ms5_2_item_number_hierarchy.py `
+        docs/milestones/MS5_2_ITEM_NUMBER_HIERARCHY_PARSER.md
+
+git commit -m "feat(ms5.2): add Item No hierarchy parser"
+
+git status

@@ -6,6 +6,7 @@ import re
 from collections.abc import Sequence
 
 from .extraction import ExtractedRow
+from .item_numbering import ItemNumber, ItemNumberParser
 from .values import is_blank_value, numbering_level
 
 NOTE_WORDS = ("หมายเหตุ", "note", "remark")
@@ -53,6 +54,9 @@ class RowClassifier:
     New workflows should call ``classify_rows`` because BOQ headings and totals
     cannot be identified reliably without looking at rows before and after them.
     """
+
+    def __init__(self, item_number_parser: ItemNumberParser | None = None) -> None:
+        self.item_number_parser = item_number_parser or ItemNumberParser()
 
     def classify(self, row: ExtractedRow) -> RowType:
         return self.classify_result(row).row_type
@@ -169,20 +173,20 @@ class RowClassifier:
         )
 
     def _has_numbered_children(self, rows: Sequence[ExtractedRow], index: int) -> bool:
-        parent = self._number_path(rows[index].item_no)
+        parent = self.item_number_parser.parse(rows[index].item_no)
         if parent is None:
             return False
         for following in rows[index + 1 : index + 10]:
             if not following.description:
                 continue
-            child = self._number_path(following.item_no)
+            child = self.item_number_parser.parse(following.item_no)
             if child is None:
                 if following.unit or following.qty is not None:
                     continue
                 break
-            if len(child) <= len(parent):
+            if child.level <= parent.level:
                 break
-            return child[: len(parent)] == parent
+            return parent.is_parent_of(child)
         return False
 
     def _is_probable_heading_before_items(self, rows: Sequence[ExtractedRow], index: int) -> bool:
@@ -240,10 +244,3 @@ class RowClassifier:
             break
         # End-of-sheet totals are also closing totals.
         return not any(f.description for f in rows[index + 1 :])
-
-    @staticmethod
-    def _number_path(text: str) -> tuple[int, ...] | None:
-        value = text.strip().rstrip(")")
-        if not re.fullmatch(r"\d+(?:\.\d+){0,5}", value):
-            return None
-        return tuple(int(part) for part in value.split("."))
