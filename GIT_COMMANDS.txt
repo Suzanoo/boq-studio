@@ -1,10 +1,12 @@
-# Continue on the current branch. Do not create a new branch.
+git status
+git checkout -b feat/ms6-guided-workflow
+
 pytest
 
 git add src/boq_studio/app.py `
-        src/boq_studio/core/tree_edit.py `
-        tests/test_ms5_5_tree_override_export.py `
-        docs/milestones/MS5_5_1_TREE_WBS_CONVERSION.md
+        src/boq_studio/workflow.py `
+        tests/test_ms6_guided_workflow.py `
+        docs/milestones/MS6_GUIDED_WORKFLOW.md
 
-git commit -m "feat(tree): allow selected rows to become WBS headings"
+git commit -m "feat(ms6): add guided workflow and sheet states"
 git status

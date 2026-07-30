@@ -20,6 +20,7 @@ from .detection import auto_detect_config, mapping_summary
 from .models import NormalizeRequest, SheetConfig
 from .normalize import OUTPUT_HEADERS, normalize_workbook, normalized_preview_rows, safe_text
 from .templates import default_template_path, load_template, save_template, template_directory
+from .workflow import SheetState, sheet_state, workflow_status
 
 NONE_LABEL = "— None —"
 
@@ -673,6 +674,8 @@ class BOQStudioApp(tk.Tk):
         self.configs: dict[str, SheetConfig] = {}
         self.events: queue.Queue = queue.Queue()
         self.draft_trees: dict[str, DraftTree] = {}
+        self.exported_sheets: set[str] = set()
+        self.is_running = False
         self._build()
         self.after(100, self._poll_events)
 
@@ -685,47 +688,56 @@ class BOQStudioApp(tk.Tk):
         style.configure("Title.TLabel", font=("Segoe UI", 20, "bold"))
         style.configure("Subtitle.TLabel", font=("Segoe UI", 10))
         style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"))
+        style.configure("Step.TLabel", font=("Segoe UI", 10, "bold"))
 
         root = ttk.Frame(self, padding=18)
         root.pack(fill="both", expand=True)
         ttk.Label(root, text="BOQ Studio", style="Title.TLabel").pack(anchor="w")
-        ttk.Label(root, text="Normalize breakdown sheets into OKD-compatible Excel sheets.", style="Subtitle.TLabel").pack(anchor="w", pady=(0, 14))
+        ttk.Label(root, text="Prepare WBS-3 / WBS-4 and export an OKD-compatible workbook.", style="Subtitle.TLabel").pack(anchor="w", pady=(0, 14))
 
-        file_frame = ttk.LabelFrame(root, text="1. Input BOQ", padding=10)
+        file_frame = ttk.LabelFrame(root, text="1. Select BOQ File", padding=10)
         file_frame.pack(fill="x")
         self.file_label = ttk.Label(file_frame, text="No file selected", wraplength=700)
         self.file_label.pack(side="left", fill="x", expand=True)
         ttk.Button(file_frame, text="Choose Excel file…", command=self.choose_file).pack(side="right")
 
-        sheets_frame = ttk.LabelFrame(root, text="2. Select breakdown sheets and map columns", padding=10)
+        sheets_frame = ttk.LabelFrame(root, text="2. Configure Mapping", padding=10)
         sheets_frame.pack(fill="both", expand=True, pady=12)
         toolbar = ttk.Frame(sheets_frame)
         toolbar.pack(fill="x", pady=(0, 6))
-        ttk.Button(toolbar, text="Select all", command=lambda: self._set_all(True)).pack(side="left")
-        ttk.Button(toolbar, text="Clear", command=lambda: self._set_all(False)).pack(side="left", padx=6)
-        ttk.Button(toolbar, text="Review row types…", command=self.review_selected).pack(side="left", padx=(8, 0))
-        ttk.Button(toolbar, text="Draft WBS tree…", command=self.open_draft_tree).pack(side="left", padx=(8, 0))
-        ttk.Label(toolbar, text="Double-click a sheet to Auto Detect, review and save mapping.").pack(side="right")
+        self.select_all_button = ttk.Button(toolbar, text="Select all", command=lambda: self._set_all(True), state="disabled")
+        self.select_all_button.pack(side="left")
+        self.clear_button = ttk.Button(toolbar, text="Clear", command=lambda: self._set_all(False), state="disabled")
+        self.clear_button.pack(side="left", padx=6)
+        self.configure_button = ttk.Button(toolbar, text="Configure Mapping…", command=self.configure_selected, state="disabled")
+        self.configure_button.pack(side="left", padx=(8, 0))
+        self.tree_button = ttk.Button(toolbar, text="3. Draft WBS Tree…", command=self.open_draft_tree, state="disabled")
+        self.tree_button.pack(side="left", padx=(8, 0))
+        ttk.Label(toolbar, text="Select a sheet, configure its columns, then approve its Draft WBS Tree.").pack(side="right")
 
-        self.sheet_tree = ttk.Treeview(sheets_frame, columns=("use", "sheet", "mapping"), show="headings", selectmode="browse")
+        self.sheet_tree = ttk.Treeview(sheets_frame, columns=("use", "sheet", "status"), show="headings", selectmode="browse")
         self.sheet_tree.heading("use", text="Use")
         self.sheet_tree.heading("sheet", text="Sheet")
-        self.sheet_tree.heading("mapping", text="Mapping")
+        self.sheet_tree.heading("status", text="Status")
         self.sheet_tree.column("use", width=70, anchor="center")
-        self.sheet_tree.column("sheet", width=280)
-        self.sheet_tree.column("mapping", width=580)
-        self.sheet_tree.pack(fill="both", expand=True)
+        self.sheet_tree.column("sheet", width=340)
+        self.sheet_tree.column("status", width=300)
+        ybar = ttk.Scrollbar(sheets_frame, orient="vertical", command=self.sheet_tree.yview)
+        self.sheet_tree.configure(yscrollcommand=ybar.set)
+        self.sheet_tree.pack(side="left", fill="both", expand=True)
+        ybar.pack(side="right", fill="y")
         self.sheet_tree.bind("<Double-1>", self.configure_selected)
         self.sheet_tree.bind("<Button-1>", self.toggle_sheet)
+        self.sheet_tree.bind("<<TreeviewSelect>>", lambda _event: self._update_workflow_ui())
 
         action = ttk.Frame(root)
         action.pack(fill="x")
-        self.run_button = ttk.Button(action, text="Normalize to Desktop", command=self.run_normalize, style="Accent.TButton", state="disabled")
+        self.run_button = ttk.Button(action, text="4. Normalize to Desktop", command=self.run_normalize, style="Accent.TButton", state="disabled")
         self.run_button.pack(side="right")
 
-        progress_frame = ttk.LabelFrame(root, text="3. Progress", padding=10)
+        progress_frame = ttk.LabelFrame(root, text="Workflow status", padding=10)
         progress_frame.pack(fill="x", pady=(12, 0))
-        self.status_label = ttk.Label(progress_frame, text="Ready")
+        self.status_label = ttk.Label(progress_frame, text="Step 1 — Choose a BOQ workbook")
         self.status_label.pack(anchor="w")
         self.progress = ttk.Progressbar(progress_frame, mode="determinate", maximum=100)
         self.progress.pack(fill="x", pady=(6, 0))
@@ -745,26 +757,30 @@ class BOQStudioApp(tk.Tk):
         self.file_label.configure(text=str(self.input_path))
         self.sheet_vars.clear()
         self.configs.clear()
+        self.draft_trees.clear()
+        self.exported_sheets.clear()
         self.sheet_tree.delete(*self.sheet_tree.get_children())
         for name in names:
             selected = not any(word in name.casefold() for word in ("sum", "summary", "ปร.6", "ปร.5", "log"))
             self.sheet_vars[name] = tk.BooleanVar(value=selected)
             auto_path = default_template_path(self.input_path, name)
-            mapping = "Not configured"
+            status = SheetState.NEW.value
             if auto_path.exists():
                 try:
                     self.configs[name] = load_template(auto_path, sheet_name=name)
-                    mapping = mapping_summary(self.configs[name])
+                    status = SheetState.MAPPED.value
                 except Exception:
                     pass
-            self.sheet_tree.insert("", "end", iid=name, values=("✓" if selected else "", name, mapping))
-        self.run_button.configure(state="normal")
-        self.status_label.configure(text=f"Loaded {len(names)} sheets")
+            self.sheet_tree.insert("", "end", iid=name, values=("✓" if selected else "", name, status))
+        self.select_all_button.configure(state="normal")
+        self.clear_button.configure(state="normal")
+        self._update_workflow_ui()
 
     def _set_all(self, value: bool) -> None:
         for name, var in self.sheet_vars.items():
             var.set(value)
             self._refresh_row(name)
+        self._update_workflow_ui()
 
     def toggle_sheet(self, event) -> None:
         region = self.sheet_tree.identify("region", event.x, event.y)
@@ -773,6 +789,7 @@ class BOQStudioApp(tk.Tk):
         if region == "cell" and column == "#1" and row:
             self.sheet_vars[row].set(not self.sheet_vars[row].get())
             self._refresh_row(row)
+            self._update_workflow_ui()
 
     def configure_selected(self, _event=None) -> None:
         selection = self.sheet_tree.selection()
@@ -783,29 +800,12 @@ class BOQStudioApp(tk.Tk):
         self.wait_window(dialog)
         if dialog.result:
             self.configs[name] = dialog.result
+            self.draft_trees.pop(name, None)
+            self.exported_sheets.discard(name)
             self.sheet_vars[name].set(True)
             self._refresh_row(name)
+            self._update_workflow_ui()
 
-
-    def review_selected(self) -> None:
-        selection = self.sheet_tree.selection()
-        if not selection or not self.input_path:
-            messagebox.showwarning("Select sheet", "Select one configured sheet first.", parent=self)
-            return
-        name = selection[0]
-        cfg = self.configs.get(name)
-        if cfg is None:
-            messagebox.showwarning("Mapping required", "Double-click the sheet and save its column mapping first.", parent=self)
-            return
-        dialog = ClassificationReviewDialog(self, self.input_path, cfg)
-        self.wait_window(dialog)
-        if dialog.result is not None:
-            cfg.classification_overrides, cfg.wbs_level_overrides = dialog.result
-            try:
-                save_template(default_template_path(self.input_path, name), cfg)
-            except OSError:
-                pass
-            self._refresh_row(name)
 
     def open_draft_tree(self) -> None:
         selection = self.sheet_tree.selection()
@@ -821,29 +821,71 @@ class BOQStudioApp(tk.Tk):
         self.wait_window(dialog)
         if dialog.result is not None:
             self.draft_trees[name] = dialog.result
+            self.exported_sheets.discard(name)
             self._refresh_row(name)
+            self._update_workflow_ui()
+
+    def _state_for(self, name: str) -> SheetState:
+        return sheet_state(
+            has_mapping=name in self.configs,
+            has_tree=name in self.draft_trees,
+            exported=name in self.exported_sheets,
+        )
 
     def _refresh_row(self, name: str) -> None:
-        cfg = self.configs.get(name)
-        mapping = mapping_summary(cfg) if cfg else "Not configured"
-        if cfg:
-            reviewed = set(cfg.classification_overrides) | set(cfg.wbs_level_overrides)
-            if reviewed:
-                mapping += f" · Review {len(reviewed)}"
-        if name in self.draft_trees:
-            mapping += " · Draft tree"
-        self.sheet_tree.item(name, values=("✓" if self.sheet_vars[name].get() else "", name, mapping))
+        state = self._state_for(name)
+        self.sheet_tree.item(
+            name,
+            values=("✓" if self.sheet_vars[name].get() else "", name, state.value),
+        )
+
+    def _selected_sheet_names(self) -> list[str]:
+        return [name for name, var in self.sheet_vars.items() if var.get()]
+
+    def _update_workflow_ui(self) -> None:
+        selected_row = self.sheet_tree.selection()
+        current_name = selected_row[0] if selected_row else None
+        has_file = self.input_path is not None
+        self.configure_button.configure(state="normal" if has_file and current_name else "disabled")
+        can_open_tree = bool(current_name and current_name in self.configs)
+        self.tree_button.configure(state="normal" if can_open_tree else "disabled")
+
+        selected = self._selected_sheet_names()
+        status = workflow_status(self._state_for(name) for name in selected)
+        self.run_button.configure(
+            state="normal" if status.can_export and not self.is_running else "disabled"
+        )
+        if not has_file:
+            text = "Step 1 — Choose a BOQ workbook"
+        elif status.selected_count == 0:
+            text = "Select at least one breakdown sheet"
+        elif status.new_count:
+            text = f"Step 2 — Configure Mapping · {status.summary}"
+        elif status.mapped_count:
+            text = f"Step 3 — Review Draft WBS Tree · {status.summary}"
+        else:
+            text = f"Step 4 — {status.summary}"
+        self.status_label.configure(text=text)
 
     def run_normalize(self) -> None:
         if not self.input_path:
             return
-        selected = [name for name, var in self.sheet_vars.items() if var.get()]
+        selected = self._selected_sheet_names()
         if not selected:
             messagebox.showwarning("No sheets", "Select at least one breakdown sheet.", parent=self)
             return
         missing = [name for name in selected if name not in self.configs]
         if missing:
-            messagebox.showwarning("Mapping required", "Double-click and configure every selected sheet first:\n\n" + "\n".join(missing), parent=self)
+            messagebox.showwarning("Mapping required", "Configure every selected sheet first:\n\n" + "\n".join(missing), parent=self)
+            return
+        missing_trees = [name for name in selected if name not in self.draft_trees]
+        if missing_trees:
+            messagebox.showwarning(
+                "Draft WBS Tree required",
+                "Open Draft WBS Tree and click 'Use this tree' for every selected sheet:\n\n"
+                + "\n".join(missing_trees),
+                parent=self,
+            )
             return
 
         desktop = Path.home() / "Desktop"
@@ -859,7 +901,8 @@ class BOQStudioApp(tk.Tk):
             [self.configs[name] for name in selected],
             draft_trees={name: self.draft_trees[name] for name in selected if name in self.draft_trees},
         )
-        self.run_button.configure(state="disabled")
+        self.is_running = True
+        self._update_workflow_ui()
         self.progress["value"] = 0
         self.status_label.configure(text="Starting…")
 
@@ -889,11 +932,17 @@ class BOQStudioApp(tk.Tk):
                     warning = sum(1 for r in results if r.status == "WARNING")
                     error = sum(1 for r in results if r.status == "ERROR")
                     self.status_label.configure(text=f"Finished — OK {ok}, Warning {warning}, Error {error}")
-                    self.run_button.configure(state="normal")
+                    self.exported_sheets.update(self._selected_sheet_names())
+                    for name in self.exported_sheets:
+                        if name in self.sheet_vars:
+                            self._refresh_row(name)
+                    self.is_running = False
+                    self._update_workflow_ui()
                     messagebox.showinfo("BOQ Studio finished", f"Output created:\n{output}\n\nOK: {ok}\nWarnings: {warning}\nErrors: {error}", parent=self)
                 elif event[0] == "error":
-                    self.run_button.configure(state="normal")
+                    self.is_running = False
                     self.status_label.configure(text="Failed")
+                    self._update_workflow_ui()
                     messagebox.showerror("Normalization failed", event[1], parent=self)
         except queue.Empty:
             pass
