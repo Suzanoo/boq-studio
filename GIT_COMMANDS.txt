@@ -1,14 +1,13 @@
 git status
-git checkout -b feat/ms5.2-item-number-hierarchy
+git checkout -b feat/ms5.3-draft-tree-builder
 
 pytest
 
 git add src/boq_studio/core/__init__.py `
-        src/boq_studio/core/item_numbering.py `
-        src/boq_studio/core/classification.py `
-        tests/test_ms5_2_item_number_hierarchy.py `
-        docs/milestones/MS5_2_ITEM_NUMBER_HIERARCHY_PARSER.md
+        src/boq_studio/core/tree.py `
+        tests/test_ms5_3_draft_tree_builder.py `
+        docs/milestones/MS5_3_DRAFT_TREE_BUILDER.md
 
-git commit -m "feat(ms5.2): add Item No hierarchy parser"
+git commit -m "feat(ms5.3): build draft WBS trees"
 
 git status
