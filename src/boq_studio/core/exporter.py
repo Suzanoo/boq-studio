@@ -38,7 +38,7 @@ def normalize_sheet(source_ws, output_ws, cfg: SheetConfig, progress: ProgressCa
         row_type = classifier.classify(extracted)
         if row_type in {RowType.EMPTY, RowType.TOTAL, RowType.NOTE}:
             result.skipped_rows += 1
-        elif row_type == RowType.WBS:
+        elif row_type in {RowType.WBS, RowType.UNKNOWN}:
             if builder.accept_heading(extracted):
                 result.wbs_rows += 1
             result.skipped_rows += 1
@@ -68,7 +68,7 @@ def normalized_preview_rows(source_ws, cfg: SheetConfig, limit: int = 60) -> lis
         row_type = classifier.classify(extracted)
         if row_type in {RowType.EMPTY, RowType.TOTAL, RowType.NOTE}:
             continue
-        if row_type == RowType.WBS:
+        if row_type in {RowType.WBS, RowType.UNKNOWN}:
             builder.accept_heading(extracted)
             continue
         if extracted.amount is None or extracted.amount <= 0:

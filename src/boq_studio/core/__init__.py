@@ -1,11 +1,16 @@
-"""Core BOQ interpretation pipeline.
-
-The modules in this package are UI-independent and intentionally small:
-values -> extraction -> classification -> WBS building -> export.
-"""
-
-from .classification import RowClassifier, RowType
+from .classification import ClassificationResult, RowClassifier, RowType
 from .extraction import ExtractedRow, SheetExtractor
-from .wbs import WBSBuilder
+from .review import ClassificationReviewService, ReviewRow
+from .wbs import WBSBuilder, WBSState
 
-__all__ = ["ExtractedRow", "RowClassifier", "RowType", "SheetExtractor", "WBSBuilder"]
+__all__ = [
+    "ClassificationResult",
+    "ClassificationReviewService",
+    "ExtractedRow",
+    "ReviewRow",
+    "RowClassifier",
+    "RowType",
+    "SheetExtractor",
+    "WBSBuilder",
+    "WBSState",
+]
