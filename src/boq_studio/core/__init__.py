@@ -23,3 +23,5 @@ __all__ = [
     "WBSBuilder",
     "WBSState",
 ]
+
+from .tree_edit import DraftTreeEditor, TreeEditError

@@ -1,13 +1,14 @@
 git status
-git checkout -b feat/ms5.3-draft-tree-builder
+git checkout -b feat/ms5.4-minimal-tree-editor
 
 pytest
 
-git add src/boq_studio/core/__init__.py `
-        src/boq_studio/core/tree.py `
-        tests/test_ms5_3_draft_tree_builder.py `
-        docs/milestones/MS5_3_DRAFT_TREE_BUILDER.md
+git add src/boq_studio/app.py `
+        src/boq_studio/core/__init__.py `
+        src/boq_studio/core/tree_edit.py `
+        tests/test_ms5_4_tree_editor.py `
+        docs/milestones/MS5_4_MINIMAL_TREE_EDITOR.md
 
-git commit -m "feat(ms5.3): build draft WBS trees"
+git commit -m "feat(ms5.4): add minimal draft tree editor"
 
 git status

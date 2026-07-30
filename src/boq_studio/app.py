@@ -5,13 +5,17 @@ from dataclasses import replace
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from .core.classification import RowType
 from .core.review import ClassificationReviewService
+from .core.extraction import SheetExtractor
+from .core.classification import RowClassifier
+from .core.tree import DraftTree, DraftTreeBuilder, TreeNodeType
+from .core.tree_edit import DraftTreeEditor, TreeEditError
 from .detection import auto_detect_config, mapping_summary
 from .models import NormalizeRequest, SheetConfig
 from .normalize import OUTPUT_HEADERS, normalize_workbook, normalized_preview_rows, safe_text
@@ -449,16 +453,193 @@ class ClassificationReviewDialog(tk.Toplevel):
         self.destroy()
 
 
+class DraftTreeDialog(tk.Toplevel):
+    """Minimal MS-5.4 editor for the automatically detected draft WBS tree."""
+
+    def __init__(self, parent: tk.Misc, input_path: Path, config: SheetConfig, initial_tree: DraftTree | None = None):
+        super().__init__(parent)
+        self.title(f"Draft WBS tree — {config.sheet_name}")
+        self.geometry("1050x760")
+        self.minsize(760, 520)
+        self.transient(parent)
+        self.grab_set()
+        self.input_path = input_path
+        self.config = config
+        self.result: DraftTree | None = None
+        self.draft_tree = initial_tree or self._build_draft_tree()
+        self.editor = DraftTreeEditor(self.draft_tree, max_wbs_depth=2)
+        self.status_var = tk.StringVar(value="")
+        self._build()
+        self._render()
+
+    def _build_draft_tree(self) -> DraftTree:
+        wb = load_workbook(self.input_path, read_only=False, data_only=True)
+        try:
+            ws = wb[self.config.sheet_name]
+            rows = list(SheetExtractor().extract(ws, self.config))
+            decisions = RowClassifier().classify_rows(rows)
+            return DraftTreeBuilder().build(
+                self.config.sheet_name,
+                rows,
+                decisions,
+                overrides=self.config.classification_overrides,
+            )
+        finally:
+            wb.close()
+
+    def _build(self) -> None:
+        root = ttk.Frame(self, padding=12)
+        root.pack(fill="both", expand=True)
+        ttk.Label(
+            root,
+            text="Program detection is only a draft. Arrange WBS headings with Indent / Outdent, or create a missing WBS.",
+        ).pack(fill="x", pady=(0, 8))
+
+        table = ttk.Frame(root)
+        table.pack(fill="both", expand=True)
+        self.tree = ttk.Treeview(table, columns=("type", "item", "source"), show="tree headings", selectmode="browse")
+        self.tree.heading("#0", text="Description")
+        self.tree.heading("type", text="Type")
+        self.tree.heading("item", text="Item No.")
+        self.tree.heading("source", text="Source Row")
+        self.tree.column("#0", width=650, minwidth=300, stretch=True)
+        self.tree.column("type", width=110, stretch=False)
+        self.tree.column("item", width=110, stretch=False)
+        self.tree.column("source", width=90, stretch=False, anchor="center")
+        ybar = ttk.Scrollbar(table, orient="vertical", command=self.tree.yview)
+        xbar = ttk.Scrollbar(table, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
+        self.tree.grid(row=0, column=0, sticky="nsew")
+        ybar.grid(row=0, column=1, sticky="ns")
+        xbar.grid(row=1, column=0, sticky="ew")
+        table.rowconfigure(0, weight=1)
+        table.columnconfigure(0, weight=1)
+        self.tree.bind("<Double-1>", lambda _event: self._rename())
+
+        actions = ttk.Frame(root)
+        actions.pack(fill="x", pady=(10, 0))
+        ttk.Button(actions, text="Indent", command=self._indent).pack(side="left")
+        ttk.Button(actions, text="Outdent", command=self._outdent).pack(side="left", padx=(6, 0))
+        ttk.Button(actions, text="Create WBS", command=self._create_wbs).pack(side="left", padx=(12, 0))
+        ttk.Button(actions, text="Rename", command=self._rename).pack(side="left", padx=(6, 0))
+        ttk.Button(actions, text="Delete WBS", command=self._delete).pack(side="left", padx=(6, 0))
+        ttk.Label(actions, textvariable=self.status_var).pack(side="left", padx=14)
+        ttk.Button(actions, text="Cancel", command=self.destroy).pack(side="right")
+        ttk.Button(actions, text="Use this tree", command=self._save, style="Accent.TButton").pack(side="right", padx=6)
+
+    def _render(self, select_id: str | None = None) -> None:
+        self.tree.delete(*self.tree.get_children())
+
+        def insert(parent_iid: str, node) -> None:
+            label = node.node_type.value
+            iid = node.node_id
+            self.tree.insert(
+                parent_iid,
+                "end",
+                iid=iid,
+                text=node.description,
+                values=(label, node.item_no, "" if node.source_row is None else node.source_row),
+                open=node.is_wbs,
+            )
+            for child in node.children:
+                insert(iid, child)
+
+        root_iid = self.draft_tree.root.node_id
+        self.tree.insert("", "end", iid=root_iid, text=self.draft_tree.sheet_name, values=("WBS-2 / Sheet", "", ""), open=True)
+        for child in self.draft_tree.root.children:
+            insert(root_iid, child)
+        count = sum(1 for _ in self.draft_tree.walk())
+        self.status_var.set(f"{count} nodes")
+        if select_id and self.tree.exists(select_id):
+            self.tree.selection_set(select_id)
+            self.tree.focus(select_id)
+            self.tree.see(select_id)
+
+    def _selected_id(self) -> str | None:
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Select row", "Select one tree row first.", parent=self)
+            return None
+        if selected[0] == self.draft_tree.root.node_id:
+            return None
+        return selected[0]
+
+    def _run_edit(self, operation, node_id: str) -> None:
+        try:
+            operation(node_id)
+        except TreeEditError as exc:
+            messagebox.showwarning("Cannot edit tree", str(exc), parent=self)
+            return
+        self._render(select_id=node_id)
+
+    def _indent(self) -> None:
+        node_id = self._selected_id()
+        if node_id:
+            self._run_edit(self.editor.indent, node_id)
+
+    def _outdent(self) -> None:
+        node_id = self._selected_id()
+        if node_id:
+            self._run_edit(self.editor.outdent, node_id)
+
+    def _create_wbs(self) -> None:
+        selected = self.tree.selection()
+        selected_id = selected[0] if selected and selected[0] != self.draft_tree.root.node_id else None
+        name = simpledialog.askstring("Create WBS", "WBS description", parent=self)
+        if name is None:
+            return
+        try:
+            node = self.editor.create_wbs(name, selected_id)
+        except TreeEditError as exc:
+            messagebox.showwarning("Cannot create WBS", str(exc), parent=self)
+            return
+        self._render(select_id=node.node_id)
+
+    def _rename(self) -> None:
+        node_id = self._selected_id()
+        if not node_id:
+            return
+        node = self.draft_tree.find(node_id)
+        if node is None or not node.is_wbs:
+            messagebox.showwarning("Rename WBS", "Select a WBS row to rename.", parent=self)
+            return
+        name = simpledialog.askstring("Rename WBS", "WBS description", initialvalue=node.description, parent=self)
+        if name is None:
+            return
+        try:
+            self.editor.rename_wbs(node_id, name)
+        except TreeEditError as exc:
+            messagebox.showwarning("Cannot rename WBS", str(exc), parent=self)
+            return
+        self._render(select_id=node_id)
+
+    def _delete(self) -> None:
+        node_id = self._selected_id()
+        if not node_id:
+            return
+        try:
+            self.editor.delete_virtual_wbs(node_id)
+        except TreeEditError as exc:
+            messagebox.showwarning("Cannot delete WBS", str(exc), parent=self)
+            return
+        self._render()
+
+    def _save(self) -> None:
+        self.result = self.draft_tree
+        self.destroy()
+
+
 class BOQStudioApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("BOQ Studio — MS-4 WBS Level Review")
+        self.title("BOQ Studio — MS-5.4 Draft Tree Editor")
         self.geometry("980x720")
         self.minsize(840, 620)
         self.input_path: Path | None = None
         self.sheet_vars: dict[str, tk.BooleanVar] = {}
         self.configs: dict[str, SheetConfig] = {}
         self.events: queue.Queue = queue.Queue()
+        self.draft_trees: dict[str, DraftTree] = {}
         self._build()
         self.after(100, self._poll_events)
 
@@ -490,6 +671,7 @@ class BOQStudioApp(tk.Tk):
         ttk.Button(toolbar, text="Select all", command=lambda: self._set_all(True)).pack(side="left")
         ttk.Button(toolbar, text="Clear", command=lambda: self._set_all(False)).pack(side="left", padx=6)
         ttk.Button(toolbar, text="Review row types…", command=self.review_selected).pack(side="left", padx=(8, 0))
+        ttk.Button(toolbar, text="Draft WBS tree…", command=self.open_draft_tree).pack(side="left", padx=(8, 0))
         ttk.Label(toolbar, text="Double-click a sheet to Auto Detect, review and save mapping.").pack(side="right")
 
         self.sheet_tree = ttk.Treeview(sheets_frame, columns=("use", "sheet", "mapping"), show="headings", selectmode="browse")
@@ -592,6 +774,22 @@ class BOQStudioApp(tk.Tk):
                 pass
             self._refresh_row(name)
 
+    def open_draft_tree(self) -> None:
+        selection = self.sheet_tree.selection()
+        if not selection or not self.input_path:
+            messagebox.showwarning("Select sheet", "Select one configured sheet first.", parent=self)
+            return
+        name = selection[0]
+        cfg = self.configs.get(name)
+        if cfg is None:
+            messagebox.showwarning("Mapping required", "Double-click the sheet and save its column mapping first.", parent=self)
+            return
+        dialog = DraftTreeDialog(self, self.input_path, cfg, self.draft_trees.get(name))
+        self.wait_window(dialog)
+        if dialog.result is not None:
+            self.draft_trees[name] = dialog.result
+            self._refresh_row(name)
+
     def _refresh_row(self, name: str) -> None:
         cfg = self.configs.get(name)
         mapping = mapping_summary(cfg) if cfg else "Not configured"
@@ -599,6 +797,8 @@ class BOQStudioApp(tk.Tk):
             reviewed = set(cfg.classification_overrides) | set(cfg.wbs_level_overrides)
             if reviewed:
                 mapping += f" · Review {len(reviewed)}"
+        if name in self.draft_trees:
+            mapping += " · Draft tree"
         self.sheet_tree.item(name, values=("✓" if self.sheet_vars[name].get() else "", name, mapping))
 
     def run_normalize(self) -> None:
