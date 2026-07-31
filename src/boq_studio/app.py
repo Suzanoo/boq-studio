@@ -25,8 +25,9 @@ from .normalize import OUTPUT_HEADERS, normalize_workbook, normalized_preview_ro
 from .templates import default_template_path, load_template, save_template, template_directory
 from .workflow import SheetState, sheet_state, workflow_status
 from .shortcuts import is_text_input_widget, shortcuts_for
-from .native_os import add_recent_file, is_macos, load_recent_files, recent_files_path, save_recent_files
+from .native_os import add_recent_file, is_macos, layout_state_path, load_recent_files, recent_files_path, save_recent_files
 from .tree_ui import ACTION_COMMANDS, EDIT_COMMANDS, CommandBarMode, command_bar_mode, editing_grid, summarize_tree
+from .layout import GridRegion, LayoutManager, LayoutStateStore, PackRegion
 from .session import (
     build_session_payload,
     config_from_dict,
@@ -498,7 +499,18 @@ class DraftTreeDialog(tk.Toplevel):
         self.type_status_var = tk.StringVar(value="")
         self.editor_state_var = tk.StringVar(value="Ready")
         self.location_var = tk.StringVar(value=f"Workbook: {self.input_path.name}    |    Sheet: {self.config.sheet_name}")
+        self.detail_description_var = tk.StringVar(value="No node selected")
+        self.detail_type_var = tk.StringVar(value="—")
+        self.detail_level_var = tk.StringVar(value="—")
+        self.detail_amount_var = tk.StringVar(value="—")
+        self.detail_source_var = tk.StringVar(value="—")
         self._command_bar_mode: CommandBarMode | None = None
+        self.commands = CommandRegistry()
+        self.layout = LayoutManager(
+            "draft_tree",
+            state_store=LayoutStateStore(layout_state_path(platform.system())),
+        )
+        self._register_commands()
         self._build()
         self._render()
 
@@ -519,6 +531,9 @@ class DraftTreeDialog(tk.Toplevel):
         register(CommandID.TREE_DELETE, self._delete)
         register(CommandID.TREE_APPROVE, self._approve)
         register(CommandID.TREE_CANCEL, self._cancel)
+        register(CommandID.LAYOUT_TOGGLE_SIDEBAR, self._toggle_sidebar)
+        register(CommandID.LAYOUT_TOGGLE_COMMAND_BAR, self._toggle_command_bar)
+        register(CommandID.LAYOUT_TOGGLE_STATUS_BAR, self._toggle_status_bar)
 
     def _build_draft_tree(self) -> DraftTree:
         wb = load_workbook(self.input_path, read_only=False, data_only=True)
@@ -543,8 +558,13 @@ class DraftTreeDialog(tk.Toplevel):
             text="Program detection is only a draft. Arrange WBS headings with Indent / Outdent, or create a missing WBS.",
         ).pack(fill="x", pady=(0, 8))
 
-        table = ttk.Frame(root)
-        table.pack(fill="both", expand=True)
+        self.workspace = ttk.Frame(root)
+        self.workspace.pack(fill="both", expand=True)
+        self.workspace.rowconfigure(0, weight=1)
+        self.workspace.columnconfigure(0, weight=1)
+
+        table = ttk.Frame(self.workspace)
+        table.grid(row=0, column=0, sticky="nsew")
         self.tree = ttk.Treeview(table, columns=("type", "wbs_level", "amount", "source"), show="tree headings", selectmode="extended")
         self.tree.heading("#0", text="Description")
         self.tree.heading("type", text="Type")
@@ -564,10 +584,46 @@ class DraftTreeDialog(tk.Toplevel):
         xbar.grid(row=1, column=0, sticky="ew")
         table.rowconfigure(0, weight=1)
         table.columnconfigure(0, weight=1)
+
+        self.sidebar = ttk.LabelFrame(self.workspace, text="NODE DETAILS", padding=10, width=self.layout.state.sidebar_width)
+        self.sidebar.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        self.sidebar.grid_propagate(False)
+        sidebar_header = ttk.Frame(self.sidebar)
+        sidebar_header.pack(fill="x", pady=(0, 10))
+        ttk.Label(sidebar_header, text="Selected node", style="StatusPrimary.TLabel").pack(side="left")
+        ttk.Button(
+            sidebar_header,
+            text="×",
+            width=3,
+            command=self.commands.callback(CommandID.LAYOUT_TOGGLE_SIDEBAR),
+        ).pack(side="right")
+        ttk.Label(self.sidebar, textvariable=self.detail_description_var, wraplength=240, justify="left").pack(fill="x", pady=(0, 12))
+        detail_grid = ttk.Frame(self.sidebar)
+        detail_grid.pack(fill="x")
+        details = (
+            ("Type", self.detail_type_var),
+            ("WBS Level", self.detail_level_var),
+            ("Amount", self.detail_amount_var),
+            ("Source Row", self.detail_source_var),
+        )
+        for row_index, (label, variable) in enumerate(details):
+            ttk.Label(detail_grid, text=label, style="Hint.TLabel").grid(row=row_index, column=0, sticky="w", pady=4)
+            ttk.Label(detail_grid, textvariable=variable).grid(row=row_index, column=1, sticky="e", pady=4, padx=(12, 0))
+        detail_grid.columnconfigure(1, weight=1)
+
+        self.sidebar_toggle = ttk.Button(
+            self.workspace,
+            text="›",
+            width=3,
+            command=self.commands.callback(CommandID.LAYOUT_TOGGLE_SIDEBAR),
+        )
+        self.sidebar_toggle.grid(row=0, column=2, sticky="ne", padx=(4, 0))
+
         self.tree.bind("<Double-1>", self.commands.event_callback(CommandID.TREE_RENAME))
         self.tree.bind("<Return>", self.commands.event_callback(CommandID.TREE_RENAME))
         self.tree.bind("<F2>", self.commands.event_callback(CommandID.TREE_RENAME))
         self.tree.bind("<Button-1>", self._focus_tree, add="+")
+        self.tree.bind("<<TreeviewSelect>>", self._update_node_details, add="+")
         # Native keyboard commands. Bind to this dialog rather than bind_all
         # so shortcuts disappear cleanly when the window closes.
         self.bind("<Delete>", self._on_delete_key, add="+")
@@ -650,13 +706,50 @@ class DraftTreeDialog(tk.Toplevel):
                 ttk.Label(cell, text=shortcut, anchor="center", style="Hint.TLabel").pack(fill="x", pady=(2, 0))
             self.action_buttons[spec.key] = cell
 
-        footer = ttk.Frame(root)
-        footer.pack(fill="x", pady=(6, 0))
-        ttk.Label(footer, textvariable=self.editor_state_var, style="Hint.TLabel").pack(side="left")
-        ttk.Label(footer, textvariable=self.location_var, style="Hint.TLabel").pack(side="right")
+        self.footer = ttk.Frame(root)
+        self.footer.pack(fill="x", pady=(6, 0))
+        ttk.Label(self.footer, textvariable=self.editor_state_var, style="Hint.TLabel").pack(side="left")
+        ttk.Label(self.footer, textvariable=self.location_var, style="Hint.TLabel").pack(side="right")
+
+        self.layout.register_region("sidebar", GridRegion(self.sidebar))
+        self.layout.register_region("command_bar", PackRegion(self.command_bar, fill="x", before=self.footer))
+        self.layout.register_region("status_bar", PackRegion(self.footer, fill="x", pady=(6, 0)))
+        self._sync_sidebar_controls()
 
         self.bind("<Configure>", self._on_dialog_configure, add="+")
         self.after_idle(lambda: self._apply_command_bar_layout(command_bar_mode(self.winfo_width())))
+
+    def _toggle_sidebar(self) -> None:
+        self.layout.toggle("sidebar")
+        self._sync_sidebar_controls()
+
+    def _toggle_command_bar(self) -> None:
+        self.layout.toggle("command_bar")
+
+    def _toggle_status_bar(self) -> None:
+        self.layout.toggle("status_bar")
+
+    def _sync_sidebar_controls(self) -> None:
+        visible = self.layout.state.sidebar_visible
+        self.sidebar_toggle.configure(text="‹" if visible else "›")
+        self.sidebar_toggle.grid_remove() if visible else self.sidebar_toggle.grid()
+
+    def _update_node_details(self, _event=None) -> None:
+        selection = self.tree.selection()
+        node = self.draft_tree.find(selection[0]) if selection else None
+        if node is None:
+            self.detail_description_var.set("No node selected")
+            self.detail_type_var.set("—")
+            self.detail_level_var.set("—")
+            self.detail_amount_var.set("—")
+            self.detail_source_var.set("—")
+            return
+        self.detail_description_var.set(node.description or "(blank description)")
+        self.detail_type_var.set(node.node_type.value)
+        level = self.editor.wbs_level(node.node_id)
+        self.detail_level_var.set("—" if level is None else f"WBS-{level}")
+        self.detail_amount_var.set("—" if node.amount is None else f"{node.amount:,.2f}")
+        self.detail_source_var.set("—" if node.source_row is None else str(node.source_row))
 
     def _on_dialog_configure(self, event=None) -> None:
         if event is not None and getattr(event, "widget", None) is not self:
@@ -728,6 +821,7 @@ class DraftTreeDialog(tk.Toplevel):
             self.tree.selection_set(visible)
             self.tree.focus(visible[0])
             self.tree.see(visible[0])
+        self._update_node_details()
 
     def _focus_tree(self, _event=None) -> None:
         self.tree.focus_set()

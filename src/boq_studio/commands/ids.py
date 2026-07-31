@@ -13,6 +13,10 @@ class CommandID(StrEnum):
 
     APP_ABOUT = "app.about"
 
+    LAYOUT_TOGGLE_SIDEBAR = "layout.toggle_sidebar"
+    LAYOUT_TOGGLE_COMMAND_BAR = "layout.toggle_command_bar"
+    LAYOUT_TOGGLE_STATUS_BAR = "layout.toggle_status_bar"
+
     SHEET_FIND = "sheet.find"
     SHEET_SELECT_ALL = "sheet.select_all"
     SHEET_CLEAR_ALL = "sheet.clear_all"

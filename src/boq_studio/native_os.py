@@ -27,6 +27,10 @@ def recent_files_path(system_name: str, home: Path | None = None) -> Path:
     return user_config_dir(system_name, home) / "recent_files.json"
 
 
+def layout_state_path(system_name: str, home: Path | None = None) -> Path:
+    return user_config_dir(system_name, home) / "layout.json"
+
+
 def normalize_recent_files(paths: list[str | Path], limit: int = MAX_RECENT_FILES) -> list[Path]:
     result: list[Path] = []
     seen: set[str] = set()
