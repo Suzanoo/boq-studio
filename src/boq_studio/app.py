@@ -29,6 +29,11 @@ from .native_os import add_recent_file, is_macos, layout_state_path, load_recent
 from .tree_ui import ACTION_COMMANDS, EDIT_COMMANDS, CommandBarMode, command_bar_mode, editing_grid, summarize_tree
 from .layout import GridRegion, LayoutManager, LayoutStateStore, PackRegion
 from .view_state import ViewStateManager, ViewStateStore
+from .desktop_ui import (
+    TREE_CONTEXT_MENU, TREE_EDIT_MENU, TREE_FILE_MENU, TREE_MENU, TREE_TOOLBAR, TREE_VIEW_MENU,
+    normalized_shortcut, tooltip_text,
+)
+from .tooltip import TooltipManager
 from .session import (
     build_session_payload,
     config_from_dict,
@@ -507,6 +512,7 @@ class DraftTreeDialog(tk.Toplevel):
         self.detail_source_var = tk.StringVar(value="—")
         self._command_bar_mode: CommandBarMode | None = None
         self.commands = CommandRegistry()
+        self.tooltip_manager = TooltipManager(self)
         self.layout = LayoutManager(
             "draft_tree",
             state_store=LayoutStateStore(layout_state_path(platform.system())),
@@ -538,6 +544,10 @@ class DraftTreeDialog(tk.Toplevel):
         register(CommandID.TREE_DELETE, self._delete)
         register(CommandID.TREE_APPROVE, self._approve)
         register(CommandID.TREE_CANCEL, self._cancel)
+        register(CommandID.TREE_EXPAND_SELECTED, self._expand_selected)
+        register(CommandID.TREE_COLLAPSE_SELECTED, self._collapse_selected)
+        register(CommandID.TREE_EXPAND_ALL, self._expand_all)
+        register(CommandID.TREE_COLLAPSE_ALL, self._collapse_all)
         register(CommandID.LAYOUT_TOGGLE_SIDEBAR, self._toggle_sidebar)
         register(CommandID.LAYOUT_TOGGLE_COMMAND_BAR, self._toggle_command_bar)
         register(CommandID.LAYOUT_TOGGLE_STATUS_BAR, self._toggle_status_bar)
@@ -560,6 +570,8 @@ class DraftTreeDialog(tk.Toplevel):
     def _build(self) -> None:
         root = ttk.Frame(self, padding=12)
         root.pack(fill="both", expand=True)
+        self._build_menu_bar()
+        self._build_toolbar(root)
         ttk.Label(
             root,
             text="Program detection is only a draft. Arrange WBS headings with Indent / Outdent, or create a missing WBS.",
@@ -631,6 +643,11 @@ class DraftTreeDialog(tk.Toplevel):
         self.tree.bind("<F2>", self.commands.event_callback(CommandID.TREE_RENAME))
         self.tree.bind("<Button-1>", self._focus_tree, add="+")
         self.tree.bind("<<TreeviewSelect>>", self._update_node_details, add="+")
+        self._build_tree_context_menu()
+        context_button = "<Button-2>" if is_macos(platform.system()) else "<Button-3>"
+        self.tree.bind(context_button, self._show_tree_context_menu, add="+")
+        if is_macos(platform.system()):
+            self.tree.bind("<Control-Button-1>", self._show_tree_context_menu, add="+")
         # Native keyboard commands. Bind to this dialog rather than bind_all
         # so shortcuts disappear cleanly when the window closes.
         self.bind("<Delete>", self._on_delete_key, add="+")
@@ -661,6 +678,75 @@ class DraftTreeDialog(tk.Toplevel):
         self._build_command_bar(root)
         self.protocol("WM_DELETE_WINDOW", self.commands.callback(CommandID.TREE_CANCEL))
 
+    def _add_menu_commands(self, menu: tk.Menu, specs) -> None:
+        system_name = platform.system()
+        for spec in specs:
+            menu.add_command(
+                label=spec.label,
+                accelerator=normalized_shortcut(spec.shortcut, system_name=system_name),
+                command=self.commands.callback(spec.command_id),
+            )
+
+    def _build_menu_bar(self) -> None:
+        menu_bar = tk.Menu(self)
+        file_menu = tk.Menu(menu_bar, tearoff=False)
+        self._add_menu_commands(file_menu, TREE_FILE_MENU)
+        menu_bar.add_cascade(label="File", menu=file_menu)
+
+        edit_menu = tk.Menu(menu_bar, tearoff=False)
+        self._add_menu_commands(edit_menu, TREE_EDIT_MENU)
+        menu_bar.add_cascade(label="Edit", menu=edit_menu)
+
+        tree_menu = tk.Menu(menu_bar, tearoff=False)
+        self._add_menu_commands(tree_menu, TREE_MENU)
+        menu_bar.add_cascade(label="Tree", menu=tree_menu)
+
+        view_menu = tk.Menu(menu_bar, tearoff=False)
+        self._add_menu_commands(view_menu, TREE_VIEW_MENU)
+        menu_bar.add_cascade(label="View", menu=view_menu)
+        self.configure(menu=menu_bar)
+        self.menu_bar = menu_bar
+
+    def _build_toolbar(self, root: ttk.Frame) -> None:
+        toolbar = ttk.Frame(root, padding=(0, 0, 0, 8))
+        toolbar.pack(fill="x")
+        system_name = platform.system()
+        groups_after = {0, 2, 6}
+        for index, spec in enumerate(TREE_TOOLBAR):
+            button = ttk.Button(
+                toolbar,
+                text=spec.label,
+                command=self.commands.callback(spec.command_id),
+            )
+            button.pack(side="left", padx=(0, 4))
+            self.tooltip_manager.register(button, tooltip_text(spec, system_name=system_name))
+            if index in groups_after:
+                ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=(4, 8))
+        self.toolbar = toolbar
+
+    def _build_tree_context_menu(self) -> None:
+        self.tree_context_menu = tk.Menu(self, tearoff=False)
+        for index, spec in enumerate(TREE_CONTEXT_MENU):
+            if index in {1, 2, 6, 8, 9}:
+                self.tree_context_menu.add_separator()
+            self.tree_context_menu.add_command(
+                label=spec.label,
+                accelerator=normalized_shortcut(spec.shortcut, system_name=platform.system()),
+                command=self.commands.callback(spec.command_id),
+            )
+
+    def _show_tree_context_menu(self, event) -> str:
+        item = self.tree.identify_row(event.y)
+        if item:
+            if item not in self.tree.selection():
+                self.tree.selection_set(item)
+            self.tree.focus(item)
+        try:
+            self.tree_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.tree_context_menu.grab_release()
+        return "break"
+
     def _build_command_bar(self, root: ttk.Frame) -> None:
         ttk.Separator(root, orient="horizontal").pack(fill="x", pady=(10, 6))
         self.command_bar = ttk.Frame(root)
@@ -688,6 +774,7 @@ class DraftTreeDialog(tk.Toplevel):
             cell = ttk.Frame(self.edit_group, padding=(2, 0))
             button = ttk.Button(cell, text=spec.text, command=self.commands.callback(edit_commands[spec.key]))
             button.pack(fill="x", expand=True)
+            self.tooltip_manager.register(button, f"{spec.text}" + (f"\nShortcut: {spec.shortcut}" if spec.shortcut else ""))
             if spec.shortcut:
                 ttk.Label(cell, text=spec.shortcut, anchor="center", style="Hint.TLabel").pack(fill="x", pady=(2, 0))
             self.edit_buttons.append(cell)
@@ -707,6 +794,7 @@ class DraftTreeDialog(tk.Toplevel):
             button = ttk.Button(cell, text=spec.text, command=self.commands.callback(action_commands[spec.key]), style=style)
             button.pack(fill="x", expand=True)
             shortcut = spec.shortcut
+            self.tooltip_manager.register(button, f"{spec.text}" + (f"\nShortcut: {shortcut}" if shortcut else ""))
             if spec.key == "save" and platform.system() == "Darwin":
                 shortcut = "⌘S"
             if shortcut:
@@ -835,6 +923,28 @@ class DraftTreeDialog(tk.Toplevel):
 
     def _focus_tree(self, _event=None) -> None:
         self.tree.focus_set()
+
+    def _set_open_recursive(self, item_id: str, *, opened: bool) -> None:
+        if self.tree.exists(item_id):
+            self.tree.item(item_id, open=opened)
+            for child in self.tree.get_children(item_id):
+                self._set_open_recursive(child, opened=opened)
+
+    def _expand_selected(self) -> None:
+        for item_id in self.tree.selection():
+            self.tree.item(item_id, open=True)
+
+    def _collapse_selected(self) -> None:
+        for item_id in self.tree.selection():
+            self.tree.item(item_id, open=False)
+
+    def _expand_all(self) -> None:
+        for item_id in self.tree.get_children(""):
+            self._set_open_recursive(item_id, opened=True)
+
+    def _collapse_all(self) -> None:
+        for item_id in self.tree.get_children(""):
+            self._set_open_recursive(item_id, opened=False)
 
     def _on_delete_key(self, event=None) -> str | None:
         # Never turn a normal text-edit Delete into a destructive tree action.

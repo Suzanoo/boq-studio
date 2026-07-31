@@ -41,3 +41,7 @@ class CommandID(StrEnum):
     TREE_DELETE = "tree.delete"
     TREE_APPROVE = "tree.approve"
     TREE_CANCEL = "tree.cancel"
+    TREE_EXPAND_SELECTED = "tree.expand_selected"
+    TREE_COLLAPSE_SELECTED = "tree.collapse_selected"
+    TREE_EXPAND_ALL = "tree.expand_all"
+    TREE_COLLAPSE_ALL = "tree.collapse_all"
