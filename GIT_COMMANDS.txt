@@ -1,14 +1,12 @@
-git switch -c feat/ms6.2-persistent-tree-draft
+git switch -c feat/ms6.4-tree-shortcuts-excel-outline
 
-# Copy the patch files into the repository, then run:
 pytest
 
-git add src/boq_studio/app.py \
-        src/boq_studio/workflow.py \
-        src/boq_studio/session.py \
-        tests/test_ms6_guided_workflow.py \
-        tests/test_ms6_2_persistent_tree_draft.py \
-        docs/milestones/MS6_2_PERSISTENT_TREE_DRAFT.md
+git add src/boq_studio/app.py `
+        src/boq_studio/core/exporter.py `
+        tests/test_ms6_4_professional_excel_export.py `
+        docs/milestones/MS6_4_TREE_SHORTCUTS_AND_EXCEL_OUTLINE.md
 
-git commit -m "feat(ms6.2): persist resumable WBS tree drafts"
+git commit -m "feat(ms6.4): add tree shortcuts and Excel outline export"
+
 git status

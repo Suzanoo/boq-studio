@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import queue
 from dataclasses import replace
 import threading
@@ -478,6 +479,8 @@ class DraftTreeDialog(tk.Toplevel):
         self.result: DraftTree | None = None
         self.result_mode: str | None = None
         self.dirty = False
+        self.undo_stack: list[DraftTree] = []
+        self.redo_stack: list[DraftTree] = []
         self.draft_tree = initial_tree or self._build_draft_tree()
         self.editor = DraftTreeEditor(self.draft_tree, max_wbs_depth=2)
         self.status_var = tk.StringVar(value="")
@@ -529,6 +532,12 @@ class DraftTreeDialog(tk.Toplevel):
         table.rowconfigure(0, weight=1)
         table.columnconfigure(0, weight=1)
         self.tree.bind("<Double-1>", lambda _event: self._rename())
+        self.tree.bind("<Delete>", lambda _event: self._delete())
+        self.tree.bind("<Return>", lambda _event: self._rename())
+        self.tree.bind("<F2>", lambda _event: self._rename())
+        self.bind_all("<Control-z>", self._undo)
+        self.bind_all("<Control-y>", self._redo)
+        self.bind_all("<Control-Shift-Z>", self._redo)
 
         actions = ttk.Frame(root)
         actions.pack(fill="x", pady=(10, 0))
@@ -599,10 +608,38 @@ class DraftTreeDialog(tk.Toplevel):
             return None
         return selected[0]
 
+    def _remember(self) -> None:
+        self.undo_stack.append(copy.deepcopy(self.draft_tree))
+        if len(self.undo_stack) > 100:
+            self.undo_stack.pop(0)
+        self.redo_stack.clear()
+
+    def _restore_tree(self, tree: DraftTree) -> None:
+        self.draft_tree = copy.deepcopy(tree)
+        self.editor = DraftTreeEditor(self.draft_tree, max_wbs_depth=2)
+        self.dirty = True
+        self._render()
+
+    def _undo(self, _event=None) -> str:
+        if not self.undo_stack:
+            return "break"
+        self.redo_stack.append(copy.deepcopy(self.draft_tree))
+        self._restore_tree(self.undo_stack.pop())
+        return "break"
+
+    def _redo(self, _event=None) -> str:
+        if not self.redo_stack:
+            return "break"
+        self.undo_stack.append(copy.deepcopy(self.draft_tree))
+        self._restore_tree(self.redo_stack.pop())
+        return "break"
+
     def _run_edit(self, operation, node_id: str) -> None:
+        self._remember()
         try:
             operation(node_id)
         except TreeEditError as exc:
+            self.undo_stack.pop()
             messagebox.showwarning("Cannot edit tree", str(exc), parent=self)
             return
         self.dirty = True
@@ -622,9 +659,11 @@ class DraftTreeDialog(tk.Toplevel):
         node_ids = self._selected_ids()
         if not node_ids:
             return
+        self._remember()
         try:
             self.editor.move_nodes_up(node_ids)
         except TreeEditError as exc:
+            self.undo_stack.pop()
             messagebox.showwarning("Cannot move rows", str(exc), parent=self)
             return
         self.dirty = True
@@ -634,9 +673,11 @@ class DraftTreeDialog(tk.Toplevel):
         node_ids = self._selected_ids()
         if not node_ids:
             return
+        self._remember()
         try:
             self.editor.move_nodes_down(node_ids)
         except TreeEditError as exc:
+            self.undo_stack.pop()
             messagebox.showwarning("Cannot move rows", str(exc), parent=self)
             return
         self.dirty = True
@@ -646,9 +687,11 @@ class DraftTreeDialog(tk.Toplevel):
         node_ids = self._selected_ids()
         if not node_ids:
             return
+        self._remember()
         try:
             self.editor.toggle_wbs_item(node_ids)
         except TreeEditError as exc:
+            self.undo_stack.pop()
             messagebox.showwarning("Cannot toggle WBS / ITEM", str(exc), parent=self)
             return
         self.dirty = True
@@ -660,9 +703,11 @@ class DraftTreeDialog(tk.Toplevel):
         name = simpledialog.askstring("Create WBS", "WBS description", parent=self)
         if name is None:
             return
+        self._remember()
         try:
             node = self.editor.create_wbs(name, selected_id)
         except TreeEditError as exc:
+            self.undo_stack.pop()
             messagebox.showwarning("Cannot create WBS", str(exc), parent=self)
             return
         self.dirty = True
@@ -683,9 +728,11 @@ class DraftTreeDialog(tk.Toplevel):
         )
         if name is None:
             return
+        self._remember()
         try:
             self.editor.rename_node(node_id, name)
         except TreeEditError as exc:
+            self.undo_stack.pop()
             messagebox.showwarning("Cannot edit description", str(exc), parent=self)
             return
         self.dirty = True
@@ -701,9 +748,11 @@ class DraftTreeDialog(tk.Toplevel):
             parent=self,
         ):
             return
+        self._remember()
         try:
             self.editor.delete_nodes(node_ids)
         except TreeEditError as exc:
+            self.undo_stack.pop()
             messagebox.showwarning("Cannot delete rows", str(exc), parent=self)
             return
         self.dirty = True
