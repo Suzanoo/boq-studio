@@ -4,7 +4,8 @@ from boq_studio.workflow import SheetState, sheet_state, workflow_status
 def test_sheet_state_progression():
     assert sheet_state(has_mapping=False, has_tree=False) is SheetState.NEW
     assert sheet_state(has_mapping=True, has_tree=False) is SheetState.MAPPED
-    assert sheet_state(has_mapping=True, has_tree=True) is SheetState.TREE_READY
+    assert sheet_state(has_mapping=True, has_tree=True) is SheetState.TREE_DRAFT
+    assert sheet_state(has_mapping=True, has_tree=True, tree_ready=True) is SheetState.TREE_READY
     assert sheet_state(has_mapping=True, has_tree=True, exported=True) is SheetState.EXPORTED
 
 

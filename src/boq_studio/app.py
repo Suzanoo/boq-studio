@@ -21,6 +21,15 @@ from .models import NormalizeRequest, SheetConfig
 from .normalize import OUTPUT_HEADERS, normalize_workbook, normalized_preview_rows, safe_text
 from .templates import default_template_path, load_template, save_template, template_directory
 from .workflow import SheetState, sheet_state, workflow_status
+from .session import (
+    build_session_payload,
+    config_from_dict,
+    load_session,
+    save_session,
+    session_matches_workbook,
+    session_path_for,
+    tree_from_dict,
+)
 
 NONE_LABEL = "— None —"
 
@@ -467,6 +476,8 @@ class DraftTreeDialog(tk.Toplevel):
         self.input_path = input_path
         self.config = config
         self.result: DraftTree | None = None
+        self.result_mode: str | None = None
+        self.dirty = False
         self.draft_tree = initial_tree or self._build_draft_tree()
         self.editor = DraftTreeEditor(self.draft_tree, max_wbs_depth=2)
         self.status_var = tk.StringVar(value="")
@@ -530,8 +541,10 @@ class DraftTreeDialog(tk.Toplevel):
         ttk.Button(actions, text="Edit Description", command=self._rename).pack(side="left", padx=(6, 0))
         ttk.Button(actions, text="Delete Row", command=self._delete).pack(side="left", padx=(6, 0))
         ttk.Label(actions, textvariable=self.status_var).pack(side="left", padx=14)
-        ttk.Button(actions, text="Cancel", command=self.destroy).pack(side="right")
-        ttk.Button(actions, text="Use this tree", command=self._save, style="Accent.TButton").pack(side="right", padx=6)
+        ttk.Button(actions, text="Cancel", command=self._cancel).pack(side="right")
+        ttk.Button(actions, text="Use this tree", command=self._approve, style="Accent.TButton").pack(side="right", padx=6)
+        ttk.Button(actions, text="Save Draft", command=self._save_draft).pack(side="right")
+        self.protocol("WM_DELETE_WINDOW", self._cancel)
 
     def _render(self, select_ids: list[str] | None = None) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -592,6 +605,7 @@ class DraftTreeDialog(tk.Toplevel):
         except TreeEditError as exc:
             messagebox.showwarning("Cannot edit tree", str(exc), parent=self)
             return
+        self.dirty = True
         self._render(select_ids=[node_id])
 
     def _indent(self) -> None:
@@ -613,6 +627,7 @@ class DraftTreeDialog(tk.Toplevel):
         except TreeEditError as exc:
             messagebox.showwarning("Cannot move rows", str(exc), parent=self)
             return
+        self.dirty = True
         self._render(select_ids=node_ids)
 
     def _move_down(self) -> None:
@@ -624,6 +639,7 @@ class DraftTreeDialog(tk.Toplevel):
         except TreeEditError as exc:
             messagebox.showwarning("Cannot move rows", str(exc), parent=self)
             return
+        self.dirty = True
         self._render(select_ids=node_ids)
 
     def _mark_wbs(self) -> None:
@@ -635,6 +651,7 @@ class DraftTreeDialog(tk.Toplevel):
         except TreeEditError as exc:
             messagebox.showwarning("Cannot toggle WBS / ITEM", str(exc), parent=self)
             return
+        self.dirty = True
         self._render(select_ids=node_ids)
 
     def _create_wbs(self) -> None:
@@ -648,6 +665,7 @@ class DraftTreeDialog(tk.Toplevel):
         except TreeEditError as exc:
             messagebox.showwarning("Cannot create WBS", str(exc), parent=self)
             return
+        self.dirty = True
         self._render(select_ids=[node.node_id])
 
     def _rename(self) -> None:
@@ -670,6 +688,7 @@ class DraftTreeDialog(tk.Toplevel):
         except TreeEditError as exc:
             messagebox.showwarning("Cannot edit description", str(exc), parent=self)
             return
+        self.dirty = True
         self._render(select_ids=[node_id])
 
     def _delete(self) -> None:
@@ -687,11 +706,36 @@ class DraftTreeDialog(tk.Toplevel):
         except TreeEditError as exc:
             messagebox.showwarning("Cannot delete rows", str(exc), parent=self)
             return
+        self.dirty = True
         self._render()
 
-    def _save(self) -> None:
+    def _save_draft(self) -> None:
         self.result = self.draft_tree
+        self.result_mode = "draft"
+        self.dirty = False
         self.destroy()
+
+    def _approve(self) -> None:
+        self.result = self.draft_tree
+        self.result_mode = "ready"
+        self.dirty = False
+        self.destroy()
+
+    def _cancel(self) -> None:
+        if not self.dirty:
+            self.destroy()
+            return
+        answer = messagebox.askyesnocancel(
+            "Unsaved tree changes",
+            "Save the current tree as a draft before closing?",
+            parent=self,
+        )
+        if answer is None:
+            return
+        if answer:
+            self._save_draft()
+        else:
+            self.destroy()
 
 
 class BOQStudioApp(tk.Tk):
@@ -705,6 +749,7 @@ class BOQStudioApp(tk.Tk):
         self.configs: dict[str, SheetConfig] = {}
         self.events: queue.Queue = queue.Queue()
         self.draft_trees: dict[str, DraftTree] = {}
+        self.tree_ready_sheets: set[str] = set()
         self.exported_sheets: set[str] = set()
         self.is_running = False
         self._build()
@@ -789,17 +834,21 @@ class BOQStudioApp(tk.Tk):
         self.sheet_vars.clear()
         self.configs.clear()
         self.draft_trees.clear()
+        self.tree_ready_sheets.clear()
         self.exported_sheets.clear()
         self.sheet_tree.delete(*self.sheet_tree.get_children())
+        self._try_resume_session(names)
         for name in names:
             selected = not any(word in name.casefold() for word in ("sum", "summary", "ปร.6", "ปร.5", "log"))
+            if name in self.sheet_vars:
+                selected = self.sheet_vars[name].get()
             self.sheet_vars[name] = tk.BooleanVar(value=selected)
             auto_path = default_template_path(self.input_path, name)
-            status = SheetState.NEW.value
-            if auto_path.exists():
+            status = self._state_for(name).value
+            if name not in self.configs and auto_path.exists():
                 try:
                     self.configs[name] = load_template(auto_path, sheet_name=name)
-                    status = SheetState.MAPPED.value
+                    status = self._state_for(name).value
                 except Exception:
                     pass
             self.sheet_tree.insert("", "end", iid=name, values=("✓" if selected else "", name, status))
@@ -807,11 +856,71 @@ class BOQStudioApp(tk.Tk):
         self.clear_button.configure(state="normal")
         self._update_workflow_ui()
 
+    def _try_resume_session(self, workbook_sheets: list[str]) -> None:
+        assert self.input_path is not None
+        path = session_path_for(self.input_path)
+        if not path.exists():
+            return
+        try:
+            payload = load_session(path)
+        except Exception:
+            return
+        if not session_matches_workbook(payload, self.input_path):
+            messagebox.showwarning(
+                "Workbook changed",
+                "A saved BOQ Studio project was found, but the source workbook has changed. A new project will be started.",
+                parent=self,
+            )
+            return
+        if not messagebox.askyesno(
+            "Resume project",
+            "A saved BOQ Studio project was found for this workbook. Resume where you left off?",
+            parent=self,
+        ):
+            return
+        valid = set(workbook_sheets)
+        for name, selected in payload.get("selected", {}).items():
+            if name in valid:
+                self.sheet_vars[name] = tk.BooleanVar(value=bool(selected))
+        self.configs = {
+            name: config_from_dict(data)
+            for name, data in payload.get("configs", {}).items()
+            if name in valid
+        }
+        self.draft_trees = {
+            name: tree_from_dict(data)
+            for name, data in payload.get("trees", {}).items()
+            if name in valid
+        }
+        self.tree_ready_sheets = set(payload.get("tree_ready", [])) & valid
+        self.exported_sheets = set(payload.get("exported", [])) & valid
+
+    def _save_project_session(self) -> None:
+        if self.input_path is None:
+            return
+        try:
+            payload = build_session_payload(
+                self.input_path,
+                {name: var.get() for name, var in self.sheet_vars.items()},
+                self.configs,
+                self.draft_trees,
+                self.tree_ready_sheets,
+                self.exported_sheets,
+            )
+            save_session(session_path_for(self.input_path), payload)
+        except Exception as exc:
+            messagebox.showwarning(
+                "Project save warning",
+                f"Could not save the project session:\n{exc}",
+                parent=self,
+            )
+
     def _set_all(self, value: bool) -> None:
         for name, var in self.sheet_vars.items():
             var.set(value)
             self._refresh_row(name)
         self._update_workflow_ui()
+        self._save_project_session()
 
     def toggle_sheet(self, event) -> None:
         region = self.sheet_tree.identify("region", event.x, event.y)
@@ -821,6 +930,7 @@ class BOQStudioApp(tk.Tk):
             self.sheet_vars[row].set(not self.sheet_vars[row].get())
             self._refresh_row(row)
             self._update_workflow_ui()
+            self._save_project_session()
 
     def configure_selected(self, _event=None) -> None:
         selection = self.sheet_tree.selection()
@@ -836,6 +946,7 @@ class BOQStudioApp(tk.Tk):
             self.sheet_vars[name].set(True)
             self._refresh_row(name)
             self._update_workflow_ui()
+            self._save_project_session()
 
 
     def open_draft_tree(self) -> None:
@@ -852,14 +963,20 @@ class BOQStudioApp(tk.Tk):
         self.wait_window(dialog)
         if dialog.result is not None:
             self.draft_trees[name] = dialog.result
+            if dialog.result_mode == "ready":
+                self.tree_ready_sheets.add(name)
+            else:
+                self.tree_ready_sheets.discard(name)
             self.exported_sheets.discard(name)
             self._refresh_row(name)
             self._update_workflow_ui()
+            self._save_project_session()
 
     def _state_for(self, name: str) -> SheetState:
         return sheet_state(
             has_mapping=name in self.configs,
             has_tree=name in self.draft_trees,
+            tree_ready=name in self.tree_ready_sheets,
             exported=name in self.exported_sheets,
         )
 
@@ -892,7 +1009,7 @@ class BOQStudioApp(tk.Tk):
             text = "Select at least one breakdown sheet"
         elif status.new_count:
             text = f"Step 2 — Configure Mapping · {status.summary}"
-        elif status.mapped_count:
+        elif status.mapped_count or status.tree_draft_count:
             text = f"Step 3 — Review Draft WBS Tree · {status.summary}"
         else:
             text = f"Step 4 — {status.summary}"
@@ -909,7 +1026,7 @@ class BOQStudioApp(tk.Tk):
         if missing:
             messagebox.showwarning("Mapping required", "Configure every selected sheet first:\n\n" + "\n".join(missing), parent=self)
             return
-        missing_trees = [name for name in selected if name not in self.draft_trees]
+        missing_trees = [name for name in selected if name not in self.tree_ready_sheets]
         if missing_trees:
             messagebox.showwarning(
                 "Draft WBS Tree required",
@@ -969,6 +1086,7 @@ class BOQStudioApp(tk.Tk):
                             self._refresh_row(name)
                     self.is_running = False
                     self._update_workflow_ui()
+                    self._save_project_session()
                     messagebox.showinfo("BOQ Studio finished", f"Output created:\n{output}\n\nOK: {ok}\nWarnings: {warning}\nErrors: {error}", parent=self)
                 elif event[0] == "error":
                     self.is_running = False

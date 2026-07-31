@@ -1,12 +1,14 @@
-git status
-git checkout -b feat/ms6-guided-workflow
+git switch -c feat/ms6.2-persistent-tree-draft
 
+# Copy the patch files into the repository, then run:
 pytest
 
-git add src/boq_studio/app.py `
-        src/boq_studio/workflow.py `
-        tests/test_ms6_guided_workflow.py `
-        docs/milestones/MS6_GUIDED_WORKFLOW.md
+git add src/boq_studio/app.py \
+        src/boq_studio/workflow.py \
+        src/boq_studio/session.py \
+        tests/test_ms6_guided_workflow.py \
+        tests/test_ms6_2_persistent_tree_draft.py \
+        docs/milestones/MS6_2_PERSISTENT_TREE_DRAFT.md
 
-git commit -m "feat(ms6): add guided workflow and sheet states"
+git commit -m "feat(ms6.2): persist resumable WBS tree drafts"
 git status
