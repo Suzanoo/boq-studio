@@ -63,22 +63,26 @@ class WBSBuilder:
         self.state.child_counter = 0
         return True
 
-    def build_item(self, row: ExtractedRow, sheet_name: str) -> list[object]:
+    def build_item(
+        self,
+        row: ExtractedRow,
+        sheet_name: str,
+        *,
+        wbs_no: str | None = None,
+    ) -> list[object]:
+        """Build one row for the public eleven-column export contract."""
         if self.state.parent_counter == 0:
             self.state.parent_counter = 1
             self.state.parent_code = "1"
         self.state.child_counter += 1
-        code = (
+        code = wbs_no or (
             row.item_no
             if (numbering_level(row.item_no) or 0) >= 2
             else f"{self.state.parent_code or self.state.parent_counter}.{self.state.child_counter}"
         )
         effective_wbs2 = self.state.wbs2 or sheet_name
-        item_level = 4 if self.state.wbs4 else 3
         return [
             code,
-            item_level,
-            "ITEM",
             "Project",
             effective_wbs2,
             self.state.wbs3,
@@ -89,6 +93,4 @@ class WBSBuilder:
             row.material,
             row.labor,
             row.amount,
-            sheet_name,
-            row.source_row,
         ]

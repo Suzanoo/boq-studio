@@ -92,10 +92,14 @@ def test_tree_export_uses_order_deletion_and_wbs_depth(tmp_path: Path):
 
     out = load_workbook(output, data_only=False)
     ws_out = out["ARCH"]
-    assert ws_out.max_row == 2
-    assert ws_out["F2"].value == "Floor"
-    assert ws_out["H2"].value == "Item B"
-    assert ws_out["M2"].value == 200
+    assert ws_out.max_row == 4
+    assert ws_out["A2"].value == "1"
+    assert ws_out["F2"].value == "ARCH"
+    assert ws_out["A3"].value == "1.1"
+    assert ws_out["D3"].value == "Floor"
+    assert ws_out["A4"].value == "1.1.1"
+    assert ws_out["F4"].value == "Item B"
+    assert ws_out["K4"].value == 200
     out.close()
 
 

@@ -28,6 +28,8 @@ OUTPUT_HEADERS = [
     "Description",
     "Unit",
     "Qty",
+    "Material",
+    "Labor",
     "Amount",
 ]
 
@@ -139,6 +141,8 @@ def normalize_sheet_from_tree(
         "",
         "",
         "",
+        "",
+        "",
     ])
     result.wbs_rows += 1
     result.output_rows += 1
@@ -174,6 +178,8 @@ def normalize_sheet_from_tree(
                 "",
                 "",
                 "",
+                "",
+                "",
             ])
             result.wbs_rows += 1
             result.output_rows += 1
@@ -190,6 +196,8 @@ def normalize_sheet_from_tree(
                     node.description or row.description,
                     row.unit,
                     row.qty,
+                    row.material,
+                    row.labor,
                     row.amount,
                 ])
                 result.item_rows += 1
@@ -338,7 +346,7 @@ def _apply_outline_and_row_styles(ws) -> None:
         depth = _wbs_depth(ws.cell(row, 1).value)
         # The sheet root stays visible at level 0. Descendants are grouped under it.
         ws.row_dimensions[row].outlineLevel = min(max(depth - 1, 0), 7)
-        amount = ws.cell(row, 9).value
+        amount = ws.cell(row, 11).value
         is_wbs = amount in (None, "")
         if is_wbs:
             fill = "D9EAF7" if depth <= 2 else "EAF2F8"
@@ -358,6 +366,8 @@ def style_output_sheet(ws, *, apply_outline: bool = True) -> None:
         "G": 12,
         "H": 14,
         "I": 18,
+        "J": 18,
+        "K": 18,
     }
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
@@ -369,14 +379,14 @@ def style_output_sheet(ws, *, apply_outline: bool = True) -> None:
     ws.page_setup.fitToHeight = 0
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.print_title_rows = "1:1"
-    ws.print_area = f"A1:I{max(1, ws.max_row)}"
+    ws.print_area = f"A1:K{max(1, ws.max_row)}"
     ws.page_margins = PageMargins(left=0.25, right=0.25, top=0.5, bottom=0.5, header=0.2, footer=0.2)
     thin = Side(style="thin", color="D9E2F3")
     for row in ws.iter_rows(min_row=2):
         for cell in row:
             cell.border = Border(bottom=thin)
             cell.alignment = Alignment(vertical="top", wrap_text=True)
-    for col in (8, 9):
+    for col in (8, 9, 10, 11):
         for cells in ws.iter_cols(min_col=col, max_col=col, min_row=2):
             cells[0].number_format = '#,##0.00;[Red]-#,##0.00;'
     if apply_outline:
@@ -414,7 +424,7 @@ def add_project_sheet(wb, normalized_sheet_names: list[str]) -> int:
             ws.row_dimensions[project_row].hidden = source_ws.row_dimensions[source_row].hidden
             # Project formulas have not been calculated yet, so copy the visible
             # WBS row style from the linked normalized sheet.
-            if source_ws.cell(source_row, 9).value in (None, ""):
+            if source_ws.cell(source_row, 11).value in (None, ""):
                 for column in range(1, len(OUTPUT_HEADERS) + 1):
                     ws.cell(project_row, column)._style = source_ws.cell(source_row, column)._style
             project_rows += 1
@@ -436,8 +446,8 @@ def add_summary_sheet(wb, normalized_sheet_names: list[str]) -> None:
         row_no = ws.max_row + 1
         ref = excel_sheet_ref(sheet_name)
         ws.cell(row_no, 1, sheet_name)
-        ws.cell(row_no, 2, f'=COUNT({ref}!I2:I{last_row})')
-        ws.cell(row_no, 3, f'=SUM({ref}!I2:I{last_row})')
+        ws.cell(row_no, 2, f'=COUNT({ref}!K2:K{last_row})')
+        ws.cell(row_no, 3, f'=SUM({ref}!K2:K{last_row})')
     last_detail_row = ws.max_row
     grand_row = last_detail_row + 2
     ws.cell(grand_row, 1, "Grand Total")
@@ -446,7 +456,7 @@ def add_summary_sheet(wb, normalized_sheet_names: list[str]) -> None:
     project_row = grand_row + 2
     project_last_row = max(2, wb["Project"].max_row)
     ws.cell(project_row, 1, "Project Sheet Total")
-    ws.cell(project_row, 3, f"=SUM('Project'!I2:I{project_last_row})")
+    ws.cell(project_row, 3, f"=SUM('Project'!K2:K{project_last_row})")
     ws.cell(project_row + 1, 1, "Difference")
     ws.cell(project_row + 1, 3, f"=C{project_row}-C{grand_row}")
     for cell in ws[1]:

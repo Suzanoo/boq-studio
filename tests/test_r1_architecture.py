@@ -37,4 +37,4 @@ def test_classifier_and_wbs_builder_are_independent():
     assert [classifier.classify(row) for row in rows] == [RowType.WBS, RowType.WBS, RowType.ITEM]
     builder.accept_heading(rows[0]); builder.accept_heading(rows[1])
     output = builder.build_item(rows[2], "BOQ")
-    assert output[5:8] == ["Structural Work", "Concrete", "Concrete 240 ksc"]
+    assert output[3:6] == ["Structural Work", "Concrete", "Concrete 240 ksc"]

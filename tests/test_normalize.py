@@ -45,12 +45,13 @@ def test_normalize_filters_zero_amount_and_builds_okd_wbs(tmp_path: Path):
     out = load_workbook(output, data_only=True)
     ws_out = out["Breakdown"]
     assert ws_out.max_row == 2
-    assert ws_out["A2"].value == "1.1.1"
-    assert ws_out["D2"].value == "Project"
-    assert ws_out["E2"].value == "Breakdown"
-    assert ws_out["F2"].value == "งานโครงสร้าง"
-    assert ws_out["G2"].value == "งานคอนกรีต"
-    assert ws_out["M2"].value == 25000
+    assert ws_out["A2"].value == "1.1"
+    assert ws_out["B2"].value == "Project"
+    assert ws_out["C2"].value == "Breakdown"
+    assert ws_out["D2"].value == "งานโครงสร้าง"
+    assert ws_out["E2"].value == "งานคอนกรีต"
+    assert ws_out["F2"].value == "คอนกรีต 240 ksc"
+    assert ws_out["K2"].value == 25000
 
 
 def test_project_sheet_combines_normalized_sheets_in_selected_order(tmp_path: Path):
@@ -92,10 +93,10 @@ def test_project_sheet_combines_normalized_sheets_in_selected_order(tmp_path: Pa
     assert project["A2"].value == '=IF(\'Arch\'!A2="","",\'Arch\'!A2)'
     assert project["E2"].value == '=IF(\'Arch\'!E2="","",\'Arch\'!E2)'
     assert project["H2"].value == '=IF(\'Arch\'!H2="","",\'Arch\'!H2)'
-    assert project["M2"].value == '=IF(\'Arch\'!M2="","",\'Arch\'!M2)'
-    assert project["E3"].value == '=IF(\'Structure\'!E2="","",\'Structure\'!E2)'
-    assert project["H3"].value == '=IF(\'Structure\'!H2="","",\'Structure\'!H2)'
-    assert project["M3"].value == '=IF(\'Structure\'!M2="","",\'Structure\'!M2)'
+    assert project["I2"].value == '=IF(\'Arch\'!I2="","",\'Arch\'!I2)'
+    assert project["A3"].value == '=IF(\'Structure\'!A2="","",\'Structure\'!A2)'
+    assert project["F3"].value == '=IF(\'Structure\'!F2="","",\'Structure\'!F2)'
+    assert project["I3"].value == '=IF(\'Structure\'!I2="","",\'Structure\'!I2)'
     assert out["LOG"]["B4"].value == 2
 
 
@@ -121,13 +122,13 @@ def test_summary_sheet_uses_live_formulas(tmp_path: Path):
     out = load_workbook(output, data_only=False)
     summary = out["SUMMARY"]
     assert summary["A3"].value == "Arch"
-    assert summary["C3"].value == "=SUM('Arch'!M2:M2)"
+    assert summary["C3"].value == "=SUM('Arch'!K2:K2)"
     assert summary["A4"].value == "MEP"
-    assert summary["C4"].value == "=SUM('MEP'!M2:M2)"
+    assert summary["C4"].value == "=SUM('MEP'!K2:K2)"
     assert summary["A6"].value == "Grand Total"
     assert summary["C6"].value == "=SUM(C3:C4)"
     assert summary["A8"].value == "Project Sheet Total"
-    assert summary["C8"].value == "=SUM('Project'!M2:M3)"
+    assert summary["C8"].value == "=SUM('Project'!K2:K3)"
     assert summary["A9"].value == "Difference"
     assert summary["C9"].value == "=C8-C6"
 
@@ -167,7 +168,7 @@ def test_total_detection_uses_row_structure_not_description_language(tmp_path: P
 
     out = load_workbook(output, data_only=True)
     normalized = out["BOQ"]
-    descriptions = [normalized.cell(row=row, column=8).value for row in range(2, normalized.max_row + 1)]
+    descriptions = [normalized.cell(row=row, column=6).value for row in range(2, normalized.max_row + 1)]
     assert "AIR SPLIT TYPE รวมอุปกรณ์การติดตั้งพร้อมใช้งาน" in descriptions
     assert "Total station equipment" in descriptions
     assert "ค้ำยันเหล็ก (รวมงานฐานราก)" in descriptions

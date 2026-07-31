@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import platform
 import queue
 from dataclasses import replace
 import threading
@@ -22,6 +23,9 @@ from .models import NormalizeRequest, SheetConfig
 from .normalize import OUTPUT_HEADERS, normalize_workbook, normalized_preview_rows, safe_text
 from .templates import default_template_path, load_template, save_template, template_directory
 from .workflow import SheetState, sheet_state, workflow_status
+from .shortcuts import is_text_input_widget, shortcuts_for
+from .native_os import add_recent_file, is_macos, load_recent_files, recent_files_path, save_recent_files
+from .tree_ui import ACTION_COMMANDS, EDIT_COMMANDS, CommandBarMode, command_bar_mode, editing_grid, summarize_tree
 from .session import (
     build_session_payload,
     config_from_dict,
@@ -332,6 +336,10 @@ class ClassificationReviewDialog(tk.Toplevel):
         self.level_overrides = dict(config.wbs_level_overrides)
         self.filter_var = tk.StringVar(value="Review needed")
         self.status_var = tk.StringVar(value="")
+        self.type_status_var = tk.StringVar(value="")
+        self.editor_state_var = tk.StringVar(value="Ready")
+        self.location_var = tk.StringVar(value=f"Workbook: {self.input_path.name}    |    Sheet: {self.config.sheet_name}")
+        self._command_bar_mode: CommandBarMode | None = None
         self._build()
         self._load_rows()
 
@@ -484,6 +492,10 @@ class DraftTreeDialog(tk.Toplevel):
         self.draft_tree = initial_tree or self._build_draft_tree()
         self.editor = DraftTreeEditor(self.draft_tree, max_wbs_depth=2)
         self.status_var = tk.StringVar(value="")
+        self.type_status_var = tk.StringVar(value="")
+        self.editor_state_var = tk.StringVar(value="Ready")
+        self.location_var = tk.StringVar(value=f"Workbook: {self.input_path.name}    |    Sheet: {self.config.sheet_name}")
+        self._command_bar_mode: CommandBarMode | None = None
         self._build()
         self._render()
 
@@ -532,28 +544,133 @@ class DraftTreeDialog(tk.Toplevel):
         table.rowconfigure(0, weight=1)
         table.columnconfigure(0, weight=1)
         self.tree.bind("<Double-1>", lambda _event: self._rename())
-        self.tree.bind("<Delete>", lambda _event: self._delete())
         self.tree.bind("<Return>", lambda _event: self._rename())
         self.tree.bind("<F2>", lambda _event: self._rename())
-        self.bind_all("<Control-z>", self._undo)
-        self.bind_all("<Control-y>", self._redo)
-        self.bind_all("<Control-Shift-Z>", self._redo)
+        self.tree.bind("<Button-1>", self._focus_tree, add="+")
+        # Native keyboard commands. Bind to this dialog rather than bind_all
+        # so shortcuts disappear cleanly when the window closes.
+        self.bind("<Delete>", self._on_delete_key, add="+")
+        self.bind("<KP_Delete>", self._on_delete_key, add="+")
+        shortcuts = shortcuts_for(platform.system())
+        for sequence in shortcuts.undo:
+            self.bind(sequence, self._undo, add="+")
+        for sequence in shortcuts.redo:
+            self.bind(sequence, self._redo, add="+")
+        for sequence in shortcuts.save:
+            self.bind(sequence, self._save_draft_shortcut, add="+")
+        for sequence in shortcuts.find:
+            self.bind(sequence, self._focus_tree_shortcut, add="+")
+        for sequence in shortcuts.select_all:
+            self.bind(sequence, self._select_all_tree_shortcut, add="+")
+        for sequence in shortcuts.move_up:
+            self.bind(sequence, self._move_up_shortcut, add="+")
+        for sequence in shortcuts.move_down:
+            self.bind(sequence, self._move_down_shortcut, add="+")
+        for sequence in shortcuts.indent:
+            self.bind(sequence, self._indent_shortcut, add="+")
+        for sequence in shortcuts.outdent:
+            self.bind(sequence, self._outdent_shortcut, add="+")
+        # Left/Right remain unbound here intentionally: ttk.Treeview already
+        # provides native collapse/expand behavior and must not be overridden.
+        self.bind("<Escape>", self._escape, add="+")
 
-        actions = ttk.Frame(root)
-        actions.pack(fill="x", pady=(10, 0))
-        ttk.Button(actions, text="Indent", command=self._indent).pack(side="left")
-        ttk.Button(actions, text="Outdent", command=self._outdent).pack(side="left", padx=(6, 0))
-        ttk.Button(actions, text="Move Up", command=self._move_up).pack(side="left", padx=(12, 0))
-        ttk.Button(actions, text="Move Down", command=self._move_down).pack(side="left", padx=(6, 0))
-        ttk.Button(actions, text="WBS ↔ ITEM", command=self._mark_wbs).pack(side="left", padx=(12, 0))
-        ttk.Button(actions, text="Create WBS", command=self._create_wbs).pack(side="left", padx=(6, 0))
-        ttk.Button(actions, text="Edit Description", command=self._rename).pack(side="left", padx=(6, 0))
-        ttk.Button(actions, text="Delete Row", command=self._delete).pack(side="left", padx=(6, 0))
-        ttk.Label(actions, textvariable=self.status_var).pack(side="left", padx=14)
-        ttk.Button(actions, text="Cancel", command=self._cancel).pack(side="right")
-        ttk.Button(actions, text="Use this tree", command=self._approve, style="Accent.TButton").pack(side="right", padx=6)
-        ttk.Button(actions, text="Save Draft", command=self._save_draft).pack(side="right")
+        self._build_command_bar(root)
         self.protocol("WM_DELETE_WINDOW", self._cancel)
+
+    def _build_command_bar(self, root: ttk.Frame) -> None:
+        ttk.Separator(root, orient="horizontal").pack(fill="x", pady=(10, 6))
+        self.command_bar = ttk.Frame(root)
+        self.command_bar.pack(fill="x")
+        self.command_bar.columnconfigure(0, weight=1)
+        self.command_bar.columnconfigure(1, weight=0)
+        self.command_bar.columnconfigure(2, weight=0)
+
+        self.edit_group = ttk.LabelFrame(self.command_bar, text="EDITING", padding=6)
+        self.status_group = ttk.LabelFrame(self.command_bar, text="STATUS", padding=8)
+        self.action_group = ttk.LabelFrame(self.command_bar, text="ACTIONS", padding=6)
+
+        edit_commands = {
+            "indent": self._indent,
+            "outdent": self._outdent,
+            "move_up": self._move_up,
+            "move_down": self._move_down,
+            "toggle_type": self._mark_wbs,
+            "create_wbs": self._create_wbs,
+            "edit": self._rename,
+            "delete": self._delete,
+        }
+        self.edit_buttons: list[ttk.Frame] = []
+        for spec in EDIT_COMMANDS:
+            cell = ttk.Frame(self.edit_group, padding=(2, 0))
+            button = ttk.Button(cell, text=spec.text, command=edit_commands[spec.key])
+            button.pack(fill="x", expand=True)
+            if spec.shortcut:
+                ttk.Label(cell, text=spec.shortcut, anchor="center", style="Hint.TLabel").pack(fill="x", pady=(2, 0))
+            self.edit_buttons.append(cell)
+
+        ttk.Label(self.status_group, textvariable=self.status_var, anchor="center", style="StatusPrimary.TLabel").pack(fill="x")
+        ttk.Label(self.status_group, textvariable=self.type_status_var, anchor="center", style="Hint.TLabel").pack(fill="x", pady=(4, 0))
+
+        action_commands = {
+            "save": self._save_draft,
+            "cancel": self._cancel,
+            "approve": self._approve,
+        }
+        self.action_buttons: dict[str, ttk.Frame] = {}
+        for spec in ACTION_COMMANDS:
+            cell = ttk.Frame(self.action_group, padding=(2, 0))
+            style = "Accent.TButton" if spec.key == "approve" else "TButton"
+            button = ttk.Button(cell, text=spec.text, command=action_commands[spec.key], style=style)
+            button.pack(fill="x", expand=True)
+            shortcut = spec.shortcut
+            if spec.key == "save" and platform.system() == "Darwin":
+                shortcut = "⌘S"
+            if shortcut:
+                ttk.Label(cell, text=shortcut, anchor="center", style="Hint.TLabel").pack(fill="x", pady=(2, 0))
+            self.action_buttons[spec.key] = cell
+
+        footer = ttk.Frame(root)
+        footer.pack(fill="x", pady=(6, 0))
+        ttk.Label(footer, textvariable=self.editor_state_var, style="Hint.TLabel").pack(side="left")
+        ttk.Label(footer, textvariable=self.location_var, style="Hint.TLabel").pack(side="right")
+
+        self.bind("<Configure>", self._on_dialog_configure, add="+")
+        self.after_idle(lambda: self._apply_command_bar_layout(command_bar_mode(self.winfo_width())))
+
+    def _on_dialog_configure(self, event=None) -> None:
+        if event is not None and getattr(event, "widget", None) is not self:
+            return
+        self._apply_command_bar_layout(command_bar_mode(self.winfo_width()))
+
+    def _apply_command_bar_layout(self, mode: CommandBarMode) -> None:
+        if mode == self._command_bar_mode:
+            return
+        self._command_bar_mode = mode
+        for group in (self.edit_group, self.status_group, self.action_group):
+            group.grid_forget()
+
+        if mode == CommandBarMode.WIDE:
+            self.edit_group.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+            self.status_group.grid(row=0, column=1, sticky="nsew", padx=6)
+            self.action_group.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
+        else:
+            self.edit_group.grid(row=0, column=0, columnspan=2, sticky="ew")
+            self.status_group.grid(row=1, column=0, sticky="nsew", pady=(6, 0), padx=(0, 3))
+            self.action_group.grid(row=1, column=1, sticky="nsew", pady=(6, 0), padx=(3, 0))
+
+        positions = editing_grid(mode, len(self.edit_buttons))
+        edit_columns = len(self.edit_buttons) if mode == CommandBarMode.WIDE else 4
+        for column in range(len(self.edit_buttons)):
+            self.edit_group.columnconfigure(column, weight=1 if column < edit_columns else 0)
+        for cell, (row, column) in zip(self.edit_buttons, positions, strict=True):
+            cell.grid(row=row, column=column, sticky="nsew")
+
+        for column, key in enumerate(("save", "cancel", "approve")):
+            self.action_group.columnconfigure(column, weight=1)
+            self.action_buttons[key].grid(row=0, column=column, sticky="nsew")
+
+    def _update_editor_state(self) -> None:
+        self.editor_state_var.set("Unsaved changes" if self.dirty else "Ready")
 
     def _render(self, select_ids: list[str] | None = None) -> None:
         self.tree.delete(*self.tree.get_children())
@@ -581,13 +698,85 @@ class DraftTreeDialog(tk.Toplevel):
         self.tree.insert("", "end", iid=root_iid, text=self.draft_tree.sheet_name, values=("WBS-2 / Sheet", "WBS-2", "", ""), open=True)
         for child in self.draft_tree.root.children:
             insert(root_iid, child)
-        count = sum(1 for _ in self.draft_tree.walk())
-        self.status_var.set(f"{count} nodes")
+        summary = summarize_tree(self.draft_tree)
+        self.status_var.set(summary.primary_line)
+        self.type_status_var.set(summary.secondary_line)
+        self._update_editor_state()
         visible = [node_id for node_id in (select_ids or []) if self.tree.exists(node_id)]
         if visible:
             self.tree.selection_set(visible)
             self.tree.focus(visible[0])
             self.tree.see(visible[0])
+
+    def _focus_tree(self, _event=None) -> None:
+        self.tree.focus_set()
+
+    def _on_delete_key(self, event=None) -> str | None:
+        # Never turn a normal text-edit Delete into a destructive tree action.
+        widget = getattr(event, "widget", None)
+        widget_class = widget.winfo_class() if widget is not None else None
+        if is_text_input_widget(widget_class):
+            return None
+        if self.tree.selection():
+            self._delete()
+        return "break"
+
+    def _save_draft_shortcut(self, _event=None) -> str:
+        self._save_draft()
+        return "break"
+
+    def _focus_tree_shortcut(self, _event=None) -> str:
+        self.tree.focus_set()
+        return "break"
+
+    @staticmethod
+    def _tree_edit_shortcut_is_safe(event=None) -> bool:
+        widget = getattr(event, "widget", None)
+        widget_class = widget.winfo_class() if widget is not None else None
+        return not is_text_input_widget(widget_class)
+
+    def _select_all_tree_shortcut(self, event=None) -> str | None:
+        if not self._tree_edit_shortcut_is_safe(event):
+            return None
+        node_ids = [
+            node.node_id
+            for _depth, node in self.draft_tree.walk()
+            if node.node_id != self.draft_tree.root.node_id
+        ]
+        self.tree.selection_set(node_ids)
+        if node_ids:
+            self.tree.focus(node_ids[0])
+            self.tree.see(node_ids[0])
+        self.tree.focus_set()
+        return "break"
+
+    def _move_up_shortcut(self, event=None) -> str | None:
+        if not self._tree_edit_shortcut_is_safe(event):
+            return None
+        self._move_up()
+        return "break"
+
+    def _move_down_shortcut(self, event=None) -> str | None:
+        if not self._tree_edit_shortcut_is_safe(event):
+            return None
+        self._move_down()
+        return "break"
+
+    def _indent_shortcut(self, event=None) -> str | None:
+        if not self._tree_edit_shortcut_is_safe(event):
+            return None
+        self._indent()
+        return "break"
+
+    def _outdent_shortcut(self, event=None) -> str | None:
+        if not self._tree_edit_shortcut_is_safe(event):
+            return None
+        self._outdent()
+        return "break"
+
+    def _escape(self, _event=None) -> str:
+        self._cancel()
+        return "break"
 
     def _selected_ids(self, *, require_one: bool = True) -> list[str]:
         selected = [
@@ -801,7 +990,13 @@ class BOQStudioApp(tk.Tk):
         self.tree_ready_sheets: set[str] = set()
         self.exported_sheets: set[str] = set()
         self.is_running = False
+        self.system_name = platform.system()
+        self._recent_path = recent_files_path(self.system_name)
+        self.recent_files = load_recent_files(self._recent_path)
         self._build()
+        self._build_native_menus()
+        self._bind_shortcuts()
+        self.protocol("WM_DELETE_WINDOW", self._request_close)
         self.after(100, self._poll_events)
 
     def _build(self) -> None:
@@ -813,6 +1008,8 @@ class BOQStudioApp(tk.Tk):
         style.configure("Title.TLabel", font=("Segoe UI", 20, "bold"))
         style.configure("Subtitle.TLabel", font=("Segoe UI", 10))
         style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"))
+        style.configure("Hint.TLabel", font=("Segoe UI", 8))
+        style.configure("StatusPrimary.TLabel", font=("Segoe UI", 10, "bold"))
         style.configure("Step.TLabel", font=("Segoe UI", 10, "bold"))
 
         root = ttk.Frame(self, padding=18)
@@ -867,11 +1064,160 @@ class BOQStudioApp(tk.Tk):
         self.progress = ttk.Progressbar(progress_frame, mode="determinate", maximum=100)
         self.progress.pack(fill="x", pady=(6, 0))
 
+
+    def _build_native_menus(self) -> None:
+        menubar = tk.Menu(self)
+
+        file_menu = tk.Menu(menubar, tearoff=False)
+        file_menu.add_command(label="Open…", command=self.choose_file, accelerator="⌘O" if is_macos(self.system_name) else "Ctrl+O")
+        self.recent_menu = tk.Menu(file_menu, tearoff=False)
+        file_menu.add_cascade(label="Open Recent", menu=self.recent_menu)
+        file_menu.add_separator()
+        file_menu.add_command(label="Save Project", command=self._save_project_session, accelerator="⌘S" if is_macos(self.system_name) else "Ctrl+S")
+        file_menu.add_separator()
+        file_menu.add_command(label="Close Window" if is_macos(self.system_name) else "Exit", command=self._request_close, accelerator="⌘W" if is_macos(self.system_name) else "Alt+F4")
+        menubar.add_cascade(label="File", menu=file_menu)
+
+        edit_menu = tk.Menu(menubar, tearoff=False)
+        edit_menu.add_command(label="Find Sheet", command=self._find_shortcut, accelerator="⌘F" if is_macos(self.system_name) else "Ctrl+F")
+        edit_menu.add_command(label="Select All Sheets", command=self._select_all_shortcut, accelerator="⌘A" if is_macos(self.system_name) else "Ctrl+A")
+        menubar.add_cascade(label="Edit", menu=edit_menu)
+
+        if is_macos(self.system_name):
+            app_menu = tk.Menu(menubar, name="apple", tearoff=False)
+            app_menu.add_command(label="About BOQ Studio", command=self._show_about)
+            app_menu.add_separator()
+            app_menu.add_command(label="Quit BOQ Studio", command=self._request_close, accelerator="⌘Q")
+            menubar.add_cascade(menu=app_menu)
+            self.createcommand("tk::mac::Quit", self._request_close)
+
+        help_menu = tk.Menu(menubar, tearoff=False)
+        help_menu.add_command(label="About BOQ Studio", command=self._show_about)
+        menubar.add_cascade(label="Help", menu=help_menu)
+        self.configure(menu=menubar)
+        self._refresh_recent_menu()
+
+        self.sheet_context_menu = tk.Menu(self, tearoff=False)
+        self.sheet_context_menu.add_command(label="Configure Mapping…", command=self.configure_selected)
+        self.sheet_context_menu.add_command(label="Open Draft WBS Tree…", command=self.open_draft_tree)
+        self.sheet_context_menu.add_separator()
+        self.sheet_context_menu.add_command(label="Use Sheet", command=lambda: self._set_selected_sheet(True))
+        self.sheet_context_menu.add_command(label="Ignore Sheet", command=lambda: self._set_selected_sheet(False))
+        context_button = "<Button-2>" if is_macos(self.system_name) else "<Button-3>"
+        self.sheet_tree.bind(context_button, self._show_sheet_context_menu, add="+")
+        if is_macos(self.system_name):
+            self.sheet_tree.bind("<Control-Button-1>", self._show_sheet_context_menu, add="+")
+
+    def _refresh_recent_menu(self) -> None:
+        self.recent_menu.delete(0, "end")
+        self.recent_files = [path for path in self.recent_files if path.exists()]
+        if not self.recent_files:
+            self.recent_menu.add_command(label="No Recent Files", state="disabled")
+            return
+        for path in self.recent_files:
+            self.recent_menu.add_command(label=path.name, command=lambda selected=path: self._open_path(selected))
+        self.recent_menu.add_separator()
+        self.recent_menu.add_command(label="Clear Menu", command=self._clear_recent_files)
+
+    def _remember_recent_file(self, path: Path) -> None:
+        self.recent_files = add_recent_file(path, self.recent_files)
+        try:
+            save_recent_files(self._recent_path, self.recent_files)
+        except OSError:
+            pass
+        self._refresh_recent_menu()
+
+    def _clear_recent_files(self) -> None:
+        self.recent_files = []
+        try:
+            save_recent_files(self._recent_path, [])
+        except OSError:
+            pass
+        self._refresh_recent_menu()
+
+    def _open_path(self, path: Path) -> None:
+        if not path.exists():
+            messagebox.showwarning("File unavailable", f"The recent workbook no longer exists:\n{path}", parent=self)
+            self.recent_files = [item for item in self.recent_files if item != path]
+            self._refresh_recent_menu()
+            return
+        self._load_workbook_path(path)
+
+    def _show_sheet_context_menu(self, event) -> str:
+        row = self.sheet_tree.identify_row(event.y)
+        if row:
+            self.sheet_tree.selection_set(row)
+            self.sheet_tree.focus(row)
+            self._update_workflow_ui()
+            self.sheet_context_menu.tk_popup(event.x_root, event.y_root)
+        return "break"
+
+    def _set_selected_sheet(self, value: bool) -> None:
+        selection = self.sheet_tree.selection()
+        if not selection:
+            return
+        name = selection[0]
+        self.sheet_vars[name].set(value)
+        self._refresh_row(name)
+        self._update_workflow_ui()
+        self._save_project_session()
+
+    def _show_about(self) -> None:
+        messagebox.showinfo("About BOQ Studio", "BOQ Studio\nPrepare WBS trees and export OKD-compatible workbooks.", parent=self)
+
+    def _request_close(self) -> None:
+        if self.is_running:
+            should_close = messagebox.askyesno(
+                "Normalization in progress",
+                "BOQ Studio is still exporting. Close the application anyway?",
+                parent=self,
+            )
+            if not should_close:
+                return
+        self._save_project_session()
+        self.destroy()
+
+    def _bind_shortcuts(self) -> None:
+        shortcuts = shortcuts_for(platform.system())
+        for sequence in shortcuts.open_file:
+            self.bind(sequence, self._open_shortcut, add="+")
+        for sequence in shortcuts.save:
+            self.bind(sequence, self._save_shortcut, add="+")
+        for sequence in shortcuts.find:
+            self.bind(sequence, self._find_shortcut, add="+")
+        for sequence in shortcuts.select_all:
+            self.bind(sequence, self._select_all_shortcut, add="+")
+
+    def _open_shortcut(self, _event=None) -> str:
+        self.choose_file()
+        return "break"
+
+    def _save_shortcut(self, _event=None) -> str:
+        self._save_project_session()
+        return "break"
+
+    def _find_shortcut(self, _event=None) -> str:
+        if self.sheet_tree.get_children():
+            self.sheet_tree.focus_set()
+        return "break"
+
+    def _select_all_shortcut(self, event=None) -> str | None:
+        widget = getattr(event, "widget", None)
+        widget_class = widget.winfo_class() if widget is not None else None
+        if is_text_input_widget(widget_class):
+            return None
+        if self.input_path is not None:
+            self._set_all(True)
+        return "break"
+
     def choose_file(self) -> None:
         filename = filedialog.askopenfilename(title="Choose BOQ Excel file", filetypes=[("Excel workbook", "*.xlsx"), ("All files", "*.*")])
         if not filename:
             return
-        self.input_path = Path(filename)
+        self._load_workbook_path(Path(filename))
+
+    def _load_workbook_path(self, path: Path) -> None:
+        self.input_path = path
         try:
             wb = load_workbook(self.input_path, read_only=True, data_only=False)
             names = wb.sheetnames
@@ -879,6 +1225,7 @@ class BOQStudioApp(tk.Tk):
         except Exception as exc:
             messagebox.showerror("Cannot open workbook", str(exc), parent=self)
             return
+        self._remember_recent_file(self.input_path)
         self.file_label.configure(text=str(self.input_path))
         self.sheet_vars.clear()
         self.configs.clear()

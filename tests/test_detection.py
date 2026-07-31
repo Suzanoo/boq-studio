@@ -32,8 +32,9 @@ def test_auto_detect_mapping_and_preview(tmp_path: Path):
 
     rows = normalized_preview_rows(ws, cfg)
     assert len(rows) == 1
-    assert rows[0][2] == "ITEM"
-    assert rows[-1][12] == 25000
+    assert rows[0][2] == "Arch"
+    assert rows[0][5] == "กระเบื้องพื้น"
+    assert rows[-1][10] == 25000
 
 
 def test_save_and_load_template(tmp_path: Path):

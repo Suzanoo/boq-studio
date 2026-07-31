@@ -62,11 +62,11 @@ def test_export_applies_reviewed_wbs_2_3_4_hierarchy():
     )
     result = normalize_sheet(ws, out_ws, cfg)
     assert result.output_rows == 1
-    assert out_ws["E2"].value == "Building Zone"
-    assert out_ws["F2"].value == "Concrete Work"
-    assert out_ws["G2"].value == "Foundations"
-    assert out_ws["H2"].value == "Concrete item"
-    assert out_ws["B2"].value == 4
+    assert out_ws["C2"].value == "Building Zone"
+    assert out_ws["D2"].value == "Concrete Work"
+    assert out_ws["E2"].value == "Foundations"
+    assert out_ws["F2"].value == "Concrete item"
+    assert out_ws["B2"].value == "Project"
     wb.close()
     out_wb.close()
 
@@ -87,10 +87,10 @@ def test_wbs_3_clears_previous_wbs_4():
         wbs_level_overrides={2: 3, 3: 4, 5: 3},
     )
     normalize_sheet(ws, out_ws, cfg)
-    assert out_ws["F2"].value == "Group A"
-    assert out_ws["G2"].value == "Sub A"
-    assert out_ws["F3"].value == "Group B"
-    assert out_ws["G3"].value in (None, "")
+    assert out_ws["D2"].value == "Group A"
+    assert out_ws["E2"].value == "Sub A"
+    assert out_ws["D3"].value == "Group B"
+    assert out_ws["E3"].value in (None, "")
     wb.close()
     out_wb.close()
 

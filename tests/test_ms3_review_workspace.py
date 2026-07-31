@@ -51,9 +51,9 @@ def test_ignore_override_is_not_used_as_wbs_heading():
     cfg = config(classification_overrides={2: RowType.IGNORE.value})
     result = normalize_sheet(ws, output_ws, cfg)
     assert result.output_rows == 1
-    assert output_ws["H2"].value == "Concrete item"
-    assert output_ws["E2"].value == "BOQ"
-    assert output_ws["F2"].value in (None, "")
+    assert output_ws["F2"].value == "Concrete item"
+    assert output_ws["C2"].value == "BOQ"
+    assert output_ws["D2"].value in (None, "")
     wb.close()
     output_wb.close()
 
@@ -64,7 +64,7 @@ def test_unknown_can_be_confirmed_as_wbs():
     output_ws = output_wb.active
     cfg = config(classification_overrides={2: RowType.WBS.value})
     normalize_sheet(ws, output_ws, cfg)
-    assert output_ws["F2"].value == "Ambiguous heading"
+    assert output_ws["D2"].value == "Ambiguous heading"
     wb.close()
     output_wb.close()
 
