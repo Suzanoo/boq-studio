@@ -25,9 +25,10 @@ from .normalize import OUTPUT_HEADERS, normalize_workbook, normalized_preview_ro
 from .templates import default_template_path, load_template, save_template, template_directory
 from .workflow import SheetState, sheet_state, workflow_status
 from .shortcuts import is_text_input_widget, shortcuts_for
-from .native_os import add_recent_file, is_macos, layout_state_path, load_recent_files, recent_files_path, save_recent_files
+from .native_os import add_recent_file, is_macos, layout_state_path, load_recent_files, recent_files_path, save_recent_files, view_state_path
 from .tree_ui import ACTION_COMMANDS, EDIT_COMMANDS, CommandBarMode, command_bar_mode, editing_grid, summarize_tree
 from .layout import GridRegion, LayoutManager, LayoutStateStore, PackRegion
+from .view_state import ViewStateManager, ViewStateStore
 from .session import (
     build_session_payload,
     config_from_dict,
@@ -510,8 +511,14 @@ class DraftTreeDialog(tk.Toplevel):
             "draft_tree",
             state_store=LayoutStateStore(layout_state_path(platform.system())),
         )
+        view_key = f"draft_tree::{self.input_path.resolve(strict=False)}::{self.config.sheet_name}"
+        self.view_state = ViewStateManager(
+            view_key,
+            store=ViewStateStore(view_state_path(platform.system())),
+        )
         self._register_commands()
         self._build()
+        self.view_state.restore_window_geometry(self)
         self._render()
 
     def _register_commands(self) -> None:
@@ -787,6 +794,9 @@ class DraftTreeDialog(tk.Toplevel):
         self.editor_state_var.set("Unsaved changes" if self.dirty else "Ready")
 
     def _render(self, select_ids: list[str] | None = None) -> None:
+        columns = ("#0", "type", "wbs_level", "amount", "source")
+        if self.tree.get_children():
+            self.view_state.capture(self.tree, columns, window_geometry=self.geometry())
         self.tree.delete(*self.tree.get_children())
 
         def insert(parent_iid: str, node) -> None:
@@ -816,10 +826,10 @@ class DraftTreeDialog(tk.Toplevel):
         self.status_var.set(summary.primary_line)
         self.type_status_var.set(summary.secondary_line)
         self._update_editor_state()
+        selected_override = tuple(select_ids) if select_ids is not None else None
+        self.view_state.restore(self.tree, columns, selected_override=selected_override)
         visible = [node_id for node_id in (select_ids or []) if self.tree.exists(node_id)]
         if visible:
-            self.tree.selection_set(visible)
-            self.tree.focus(visible[0])
             self.tree.see(visible[0])
         self._update_node_details()
 
@@ -1066,13 +1076,20 @@ class DraftTreeDialog(tk.Toplevel):
         self.dirty = True
         self._render()
 
+    def _persist_view_state(self) -> None:
+        if hasattr(self, "tree") and self.tree.winfo_exists():
+            columns = ("#0", "type", "wbs_level", "amount", "source")
+            self.view_state.capture(self.tree, columns, window_geometry=self.geometry())
+
     def _save_draft(self) -> None:
+        self._persist_view_state()
         self.result = self.draft_tree
         self.result_mode = "draft"
         self.dirty = False
         self.destroy()
 
     def _approve(self) -> None:
+        self._persist_view_state()
         self.result = self.draft_tree
         self.result_mode = "ready"
         self.dirty = False
@@ -1080,6 +1097,7 @@ class DraftTreeDialog(tk.Toplevel):
 
     def _cancel(self) -> None:
         if not self.dirty:
+            self._persist_view_state()
             self.destroy()
             return
         answer = messagebox.askyesnocancel(
@@ -1092,6 +1110,7 @@ class DraftTreeDialog(tk.Toplevel):
         if answer:
             self._save_draft()
         else:
+            self._persist_view_state()
             self.destroy()
 
 
