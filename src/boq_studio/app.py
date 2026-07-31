@@ -24,6 +24,7 @@ from .models import NormalizeRequest, SheetConfig
 from .normalize import OUTPUT_HEADERS, normalize_workbook, normalized_preview_rows, safe_text
 from .templates import default_template_path, load_template, save_template, template_directory
 from .workflow import SheetState, sheet_state, workflow_status
+from .workspace import WorkspaceKind, WorkspaceServices, WorkspaceSpec, WorkspaceWindow
 from .shortcuts import is_text_input_widget, shortcuts_for
 from .native_os import add_recent_file, is_macos, layout_state_path, load_recent_files, recent_files_path, save_recent_files, view_state_path
 from .tree_ui import ACTION_COMMANDS, EDIT_COMMANDS, CommandBarMode, command_bar_mode, editing_grid, summarize_tree
@@ -47,14 +48,19 @@ from .session import (
 NONE_LABEL = "— None —"
 
 
-class SheetMappingDialog(tk.Toplevel):
+class SheetMappingDialog(WorkspaceWindow):
     def __init__(self, parent: tk.Misc, input_path: Path, sheet_name: str, initial: SheetConfig | None = None):
-        super().__init__(parent)
-        self.title(f"Map columns — {sheet_name}")
-        self.geometry("1220x790")
-        self.minsize(980, 650)
-        self.transient(parent)
-        self.grab_set()
+        super().__init__(
+            parent,
+            WorkspaceSpec(
+                workspace_id="sheet_mapping",
+                kind=WorkspaceKind.MAPPING,
+                title=f"Map columns — {sheet_name}",
+                geometry="1220x790",
+                min_size=(980, 650),
+                surfaces=("workspace", "command_bar"),
+            ),
+        )
         self.result: SheetConfig | None = None
         self.input_path = input_path
         self.sheet_name = sheet_name
@@ -326,16 +332,21 @@ class SheetMappingDialog(tk.Toplevel):
         self.destroy()
 
 
-class ClassificationReviewDialog(tk.Toplevel):
+class ClassificationReviewDialog(WorkspaceWindow):
     EDITABLE_TYPES = (RowType.WBS, RowType.ITEM, RowType.IGNORE)
 
     def __init__(self, parent: tk.Misc, input_path: Path, config: SheetConfig):
-        super().__init__(parent)
-        self.title(f"Review row types — {config.sheet_name}")
-        self.geometry("1320x760")
-        self.minsize(980, 620)
-        self.transient(parent)
-        self.grab_set()
+        super().__init__(
+            parent,
+            WorkspaceSpec(
+                workspace_id="classification_review",
+                kind=WorkspaceKind.CLASSIFICATION_REVIEW,
+                title=f"Review row types — {config.sheet_name}",
+                geometry="1320x760",
+                min_size=(980, 620),
+                surfaces=("workspace", "command_bar", "status_bar"),
+            ),
+        )
         self.input_path = input_path
         self.config = config
         self.result: tuple[dict[int, str], dict[int, int]] | None = None
@@ -482,16 +493,30 @@ class ClassificationReviewDialog(tk.Toplevel):
         self.destroy()
 
 
-class DraftTreeDialog(tk.Toplevel):
+class DraftTreeDialog(WorkspaceWindow):
     """Minimal MS-5.4 editor for the automatically detected draft WBS tree."""
 
     def __init__(self, parent: tk.Misc, input_path: Path, config: SheetConfig, initial_tree: DraftTree | None = None):
-        super().__init__(parent)
-        self.title(f"Draft WBS tree — {config.sheet_name}")
-        self.geometry("1050x760")
-        self.minsize(760, 520)
-        self.transient(parent)
-        self.grab_set()
+        layout = LayoutManager(
+            "draft_tree",
+            state_store=LayoutStateStore(layout_state_path(platform.system())),
+        )
+        services = WorkspaceServices(
+            commands=CommandRegistry(),
+            layout=layout,
+        )
+        super().__init__(
+            parent,
+            WorkspaceSpec(
+                workspace_id="draft_tree",
+                kind=WorkspaceKind.DRAFT_TREE,
+                title=f"Draft WBS tree — {config.sheet_name}",
+                geometry="1050x760",
+                min_size=(760, 520),
+                surfaces=("menu", "toolbar", "workspace", "sidebar", "command_bar", "status_bar"),
+            ),
+            services=services,
+        )
         self.input_path = input_path
         self.config = config
         self.result: DraftTree | None = None
@@ -511,12 +536,9 @@ class DraftTreeDialog(tk.Toplevel):
         self.detail_amount_var = tk.StringVar(value="—")
         self.detail_source_var = tk.StringVar(value="—")
         self._command_bar_mode: CommandBarMode | None = None
-        self.commands = CommandRegistry()
         self.tooltip_manager = TooltipManager(self)
-        self.layout = LayoutManager(
-            "draft_tree",
-            state_store=LayoutStateStore(layout_state_path(platform.system())),
-        )
+        self.layout = self.workspace_services.layout
+        assert self.layout is not None
         view_key = f"draft_tree::{self.input_path.resolve(strict=False)}::{self.config.sheet_name}"
         self.view_state = ViewStateManager(
             view_key,
