@@ -7,6 +7,7 @@ import tkinter as tk
 
 from .commands import CommandRegistry
 from .layout import LayoutManager
+from .appearance import AppearanceProfile, install_appearance
 
 
 class WorkspaceKind(StrEnum):
@@ -51,6 +52,7 @@ class WorkspaceServices:
 
     commands: CommandRegistry = field(default_factory=CommandRegistry)
     layout: LayoutManager | None = None
+    appearance: AppearanceProfile | None = None
 
 
 class WorkspaceLifecycle:
@@ -100,6 +102,8 @@ class WorkspaceWindow(tk.Toplevel):
         self.title(self.workspace_spec.title)
         self.geometry(self.workspace_spec.geometry)
         self.minsize(*self.workspace_spec.min_size)
+        self.appearance = install_appearance(self, self.workspace_services.appearance)
+        self.workspace_services.appearance = self.appearance
         self.transient(parent)
         if self.workspace_spec.modal:
             self.grab_set()

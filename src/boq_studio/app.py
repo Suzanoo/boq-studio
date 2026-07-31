@@ -35,6 +35,7 @@ from .desktop_ui import (
     normalized_shortcut, tooltip_text,
 )
 from .tooltip import TooltipManager
+from .appearance import enable_windows_dpi_awareness, install_appearance
 from .session import (
     build_session_payload,
     config_from_dict,
@@ -1250,6 +1251,7 @@ class BOQStudioApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("BOQ Studio — Draft Tree Export")
+        self.appearance = install_appearance(self)
         self.geometry("980x720")
         self.minsize(840, 620)
         self.input_path: Path | None = None
@@ -1288,18 +1290,6 @@ class BOQStudioApp(tk.Tk):
         register(CommandID.WORKBOOK_NORMALIZE, self.run_normalize)
 
     def _build(self) -> None:
-        style = ttk.Style(self)
-        try:
-            style.theme_use("clam")
-        except tk.TclError:
-            pass
-        style.configure("Title.TLabel", font=("Segoe UI", 20, "bold"))
-        style.configure("Subtitle.TLabel", font=("Segoe UI", 10))
-        style.configure("Accent.TButton", font=("Segoe UI", 10, "bold"))
-        style.configure("Hint.TLabel", font=("Segoe UI", 8))
-        style.configure("StatusPrimary.TLabel", font=("Segoe UI", 10, "bold"))
-        style.configure("Step.TLabel", font=("Segoe UI", 10, "bold"))
-
         root = ttk.Frame(self, padding=18)
         root.pack(fill="both", expand=True)
         ttk.Label(root, text="BOQ Studio", style="Title.TLabel").pack(anchor="w")
@@ -1783,6 +1773,7 @@ class BOQStudioApp(tk.Tk):
 
 
 def main() -> None:
+    enable_windows_dpi_awareness()
     app = BOQStudioApp()
     app.mainloop()
 

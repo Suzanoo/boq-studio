@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import tkinter as tk
 
+from .appearance import AppearanceProfile, build_profile
+
 
 class TooltipManager:
     """Lazy Tk tooltip manager: creates a popup only after a hover delay."""
 
-    def __init__(self, owner: tk.Misc, *, delay_ms: int = 450) -> None:
+    def __init__(self, owner: tk.Misc, *, delay_ms: int = 450, profile: AppearanceProfile | None = None) -> None:
         self.owner = owner
         self.delay_ms = delay_ms
+        self.profile = profile or build_profile()
         self._after_id: str | None = None
         self._popup: tk.Toplevel | None = None
 
@@ -42,7 +45,9 @@ class TooltipManager:
             borderwidth=1,
             padx=8,
             pady=5,
-            background="#ffffe0",
+            background=self.profile.palette.tooltip_background,
+            foreground=self.profile.palette.tooltip_text,
+            font=(self.profile.typography.family, self.profile.typography.small_size),
         ).pack()
         self._popup = popup
 
