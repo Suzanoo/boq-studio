@@ -5,6 +5,10 @@ import platform
 import queue
 from dataclasses import replace
 import threading
+import shutil
+import tempfile
+from datetime import datetime, timezone
+from typing import Callable
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -37,11 +41,15 @@ from .desktop_ui import (
 from .tooltip import TooltipManager
 from .appearance import enable_windows_dpi_awareness, install_appearance
 from .session import (
-    build_session_payload,
+    SESSION_VERSION,
+    archive_session,
+    config_to_dict,
+    tree_to_dict,
+    session_token,
+    workbook_fingerprint,
     config_from_dict,
     load_session,
     save_session,
-    session_matches_workbook,
     session_path_for,
     tree_from_dict,
 )
@@ -260,6 +268,7 @@ class SheetMappingDialog(WorkspaceWindow):
             material_col=self._column_from_label(self.column_vars["material"].get()),
             labor_col=self._column_from_label(self.column_vars["labor"].get()),
             amount_col=self._column_from_label(self.column_vars["amount"].get()),
+            max_wbs_level=self.initial.max_wbs_level,
             classification_overrides=dict(self.initial.classification_overrides),
             wbs_level_overrides=dict(self.initial.wbs_level_overrides),
         )
@@ -325,11 +334,6 @@ class SheetMappingDialog(WorkspaceWindow):
         except ValueError as exc:
             messagebox.showwarning("Missing mapping", str(exc), parent=self)
             return
-        # Auto-save a private copy so the same workbook/sheet opens quickly next time.
-        try:
-            save_template(default_template_path(self.input_path, self.sheet_name), self.result)
-        except OSError:
-            pass
         self.destroy()
 
 
@@ -497,7 +501,8 @@ class ClassificationReviewDialog(WorkspaceWindow):
 class DraftTreeDialog(WorkspaceWindow):
     """Minimal MS-5.4 editor for the automatically detected draft WBS tree."""
 
-    def __init__(self, parent: tk.Misc, input_path: Path, config: SheetConfig, initial_tree: DraftTree | None = None):
+    def __init__(self, parent: tk.Misc, input_path: Path, config: SheetConfig, initial_tree: DraftTree | None = None,
+                 on_commit: Callable[[DraftTree, str], bool] | None = None):
         layout = LayoutManager(
             "draft_tree",
             state_store=LayoutStateStore(layout_state_path(platform.system())),
@@ -525,7 +530,8 @@ class DraftTreeDialog(WorkspaceWindow):
         self.dirty = False
         self.undo_stack: list[DraftTree] = []
         self.redo_stack: list[DraftTree] = []
-        self.draft_tree = initial_tree or self._build_draft_tree()
+        self.on_commit = on_commit
+        self.draft_tree = copy.deepcopy(initial_tree) if initial_tree is not None else self._build_draft_tree()
         self.editor = DraftTreeEditor(self.draft_tree, max_wbs_depth=2)
         self.status_var = tk.StringVar(value="")
         self.type_status_var = tk.StringVar(value="")
@@ -1212,21 +1218,30 @@ class DraftTreeDialog(WorkspaceWindow):
     def _persist_view_state(self) -> None:
         if hasattr(self, "tree") and self.tree.winfo_exists():
             columns = ("#0", "type", "wbs_level", "amount", "source")
-            self.view_state.capture(self.tree, columns, window_geometry=self.geometry())
+            try:
+                self.view_state.capture(self.tree, columns, window_geometry=self.geometry())
+            except OSError as exc:
+                messagebox.showwarning(
+                    "View preferences not saved",
+                    f"Could not save window preferences: {exc}\n"
+                    "This does not change the saved tree or your Discard decision.",
+                    parent=self,
+                )
+
+    def _finish_tree(self, mode: str) -> None:
+        if self.on_commit is not None and not self.on_commit(self.draft_tree, mode):
+            return  # Keep candidate and window available after failed persistence.
+        self._persist_view_state()
+        self.result = self.draft_tree
+        self.result_mode = mode
+        self.dirty = False
+        self.destroy()
 
     def _save_draft(self) -> None:
-        self._persist_view_state()
-        self.result = self.draft_tree
-        self.result_mode = "draft"
-        self.dirty = False
-        self.destroy()
+        self._finish_tree("draft")
 
     def _approve(self) -> None:
-        self._persist_view_state()
-        self.result = self.draft_tree
-        self.result_mode = "ready"
-        self.dirty = False
-        self.destroy()
+        self._finish_tree("ready")
 
     def _cancel(self) -> None:
         if not self.dirty:
@@ -1262,6 +1277,9 @@ class BOQStudioApp(tk.Tk):
         self.tree_ready_sheets: set[str] = set()
         self.exported_sheets: set[str] = set()
         self.is_running = False
+        self._session_dirty = False
+        self._session_token: str | None = None
+        self._source_info: dict = {}
         self.system_name = platform.system()
         self._recent_path = recent_files_path(self.system_name)
         self.recent_files = load_recent_files(self._recent_path)
@@ -1431,6 +1449,8 @@ class BOQStudioApp(tk.Tk):
         return "break"
 
     def _set_selected_sheet(self, value: bool) -> None:
+        if self._busy():
+            return
         selection = self.sheet_tree.selection()
         if not selection:
             return
@@ -1438,22 +1458,55 @@ class BOQStudioApp(tk.Tk):
         self.sheet_vars[name].set(value)
         self._refresh_row(name)
         self._update_workflow_ui()
+        self._session_dirty = True
         self._save_project_session()
 
     def _show_about(self) -> None:
         messagebox.showinfo("About BOQ Studio", "BOQ Studio\nPrepare WBS trees and export OKD-compatible workbooks.", parent=self)
 
     def _request_close(self) -> None:
+        if self._busy():
+            return
+        if self._leave_current():
+            self.destroy()
+
+    def _busy(self) -> bool:
         if self.is_running:
-            should_close = messagebox.askyesno(
-                "Normalization in progress",
-                "BOQ Studio is still exporting. Close the application anyway?",
-                parent=self,
-            )
-            if not should_close:
-                return
-        self._save_project_session()
-        self.destroy()
+            messagebox.showinfo("Export in progress", "Wait for the export to finish before changing or closing this work.", parent=self)
+            return True
+        return False
+
+    def _leave_current(self) -> bool:
+        if not self._session_dirty or self.input_path is None:
+            return True
+        if self._save_project_session():
+            return True
+        if not messagebox.askyesno(
+            "Keep recoverable work",
+            "The session was not saved. Save a separate recovery JSON before leaving?\n"
+            "No keeps this work open. Recovery needs the unchanged original workbook.", parent=self,
+        ):
+            return False
+        return self._write_recovery_copy(self._session_payload())
+
+    def _write_recovery_copy(self, payload: dict) -> bool:
+        filename = filedialog.asksaveasfilename(
+            parent=self, title="Save recovery JSON (choose a new filename)",
+            initialfile=f"{self.input_path.stem}_recovery.json", defaultextension=".json",
+            filetypes=[("Session recovery", "*.json")],
+        )
+        if not filename:
+            return False
+        try:
+            target = Path(filename)
+            if target.exists():
+                raise ValueError("Choose a new filename; existing recovery files are not overwritten.")
+            save_session(target, payload, expected_token=None)
+        except Exception as exc:
+            messagebox.showerror("Recovery not saved", str(exc), parent=self)
+            return False
+        messagebox.showinfo("Recovery saved", f"Work preserved at:\n{target}\nKeep the original workbook unchanged. See the S0 recovery guide to resume.", parent=self)
+        return True
 
     def _bind_shortcuts(self) -> None:
         shortcuts = shortcuts_for(platform.system())
@@ -1495,108 +1548,181 @@ class BOQStudioApp(tk.Tk):
         self._load_workbook_path(Path(filename))
 
     def _load_workbook_path(self, path: Path) -> None:
-        self.input_path = path
+        if self._busy():
+            return
+        path = path.resolve()
         try:
-            wb = load_workbook(self.input_path, read_only=True, data_only=False)
-            names = wb.sheetnames
-            wb.close()
+            fingerprint = workbook_fingerprint(path)
+            wb = load_workbook(path, read_only=True, data_only=False)
+            try:
+                names = wb.sheetnames
+            finally:
+                wb.close()
         except Exception as exc:
             messagebox.showerror("Cannot open workbook", str(exc), parent=self)
             return
-        self._remember_recent_file(self.input_path)
-        self.file_label.configure(text=str(self.input_path))
-        self.sheet_vars.clear()
-        self.configs.clear()
-        self.draft_trees.clear()
-        self.tree_ready_sheets.clear()
-        self.exported_sheets.clear()
+        if not self._leave_current():
+            return
+        try:
+            prepared = self._prepare_session(path, names, fingerprint)
+            if prepared is None:
+                return
+            payload, token, needs_save = prepared
+            configs = {name: config_from_dict(data) for name, data in payload["configs"].items()} if payload else {}
+            trees = {name: tree_from_dict(data) for name, data in payload["trees"].items()} if payload else {}
+            selected = dict(payload["selected"]) if payload else {}
+            variables = {}
+            for name in names:
+                default = not any(word in name.casefold() for word in ("sum", "summary", "ปร.6", "ปร.5", "log"))
+                variables[name] = tk.BooleanVar(value=selected.get(name, default))
+                # A resumed session is authoritative; templates cannot fill/replace it.
+                if payload is None:
+                    template = default_template_path(path, name)
+                    if template.exists():
+                        try:
+                            cfg = load_template(template, sheet_name=name)
+                            configs[name] = replace(cfg, classification_overrides={}, wbs_level_overrides={})
+                        except Exception:
+                            pass
+            if workbook_fingerprint(path) != fingerprint:
+                raise ValueError("Workbook changed while opening. Save/close it in Excel and try again.")
+            if session_token(session_path_for(path)) != token:
+                raise ValueError("Session changed in another window while opening. Try again.")
+            stat = path.stat()
+        except Exception as exc:
+            messagebox.showerror("Cannot open session", str(exc), parent=self)
+            return
+        # Commit only after all file I/O, decoding and candidate construction succeeded.
+        self.input_path = path
+        self._source_info = {"path": str(path), "sha256": fingerprint, "size": stat.st_size, "modified_ns": stat.st_mtime_ns}
+        self._session_token = token
+        self.sheet_vars = variables
+        self.configs = configs
+        self.draft_trees = trees
+        self.tree_ready_sheets = set(payload["tree_ready"]) if payload else set()
+        self.exported_sheets = set(payload["exported"]) if payload else set()
+        self._session_dirty = needs_save
+        self.file_label.configure(text=str(path))
         self.sheet_tree.delete(*self.sheet_tree.get_children())
-        self._try_resume_session(names)
         for name in names:
-            selected = not any(word in name.casefold() for word in ("sum", "summary", "ปร.6", "ปร.5", "log"))
-            if name in self.sheet_vars:
-                selected = self.sheet_vars[name].get()
-            self.sheet_vars[name] = tk.BooleanVar(value=selected)
-            auto_path = default_template_path(self.input_path, name)
-            status = self._state_for(name).value
-            if name not in self.configs and auto_path.exists():
-                try:
-                    self.configs[name] = load_template(auto_path, sheet_name=name)
-                    status = self._state_for(name).value
-                except Exception:
-                    pass
-            self.sheet_tree.insert("", "end", iid=name, values=("✓" if selected else "", name, status))
+            self.sheet_tree.insert("", "end", iid=name, values=("✓" if variables[name].get() else "", name, self._state_for(name).value))
         self.select_all_button.configure(state="normal")
         self.clear_button.configure(state="normal")
         self._update_workflow_ui()
+        try:
+            self._remember_recent_file(path)
+        except Exception as exc:
+            messagebox.showwarning("Recent files not saved", str(exc), parent=self)
 
-    def _try_resume_session(self, workbook_sheets: list[str]) -> None:
-        assert self.input_path is not None
-        path = session_path_for(self.input_path)
-        if not path.exists():
-            return
+    def _prepare_session(self, workbook: Path, names: list[str], fingerprint: str):
+        """Return a staged payload/token, or None on Cancel. No active state mutation."""
+        path = session_path_for(workbook)
+        token = session_token(path)
+        backup = path.with_suffix(path.suffix + ".bak")
+        if token is None and not backup.exists():
+            return None, None, True
+        payload = None
+        problem = "Saved session is missing."
         try:
             payload = load_session(path)
-        except Exception:
-            return
-        if not session_matches_workbook(payload, self.input_path):
-            messagebox.showwarning(
-                "Workbook changed",
-                "A saved BOQ Studio project was found, but the source workbook has changed. A new project will be started.",
-                parent=self,
-            )
-            return
-        if not messagebox.askyesno(
-            "Resume project",
-            "A saved BOQ Studio project was found for this workbook. Resume where you left off?",
-            parent=self,
-        ):
-            return
-        valid = set(workbook_sheets)
-        for name, selected in payload.get("selected", {}).items():
-            if name in valid:
-                self.sheet_vars[name] = tk.BooleanVar(value=bool(selected))
-        self.configs = {
-            name: config_from_dict(data)
-            for name, data in payload.get("configs", {}).items()
-            if name in valid
-        }
-        self.draft_trees = {
-            name: tree_from_dict(data)
-            for name, data in payload.get("trees", {}).items()
-            if name in valid
-        }
-        self.tree_ready_sheets = set(payload.get("tree_ready", [])) & valid
-        self.exported_sheets = set(payload.get("exported", [])) & valid
-
-    def _save_project_session(self) -> None:
-        if self.input_path is None:
-            return
-        try:
-            payload = build_session_payload(
-                self.input_path,
-                {name: var.get() for name, var in self.sheet_vars.items()},
-                self.configs,
-                self.draft_trees,
-                self.tree_ready_sheets,
-                self.exported_sheets,
-            )
-            save_session(session_path_for(self.input_path), payload)
+            if payload["source"]["sha256"] != fingerprint:
+                raise ValueError("The source workbook changed; old row decisions cannot be reused safely.")
+            used = set(payload["selected"]) | set(payload["configs"]) | set(payload["trees"])
+            if not used <= set(names):
+                raise ValueError("Saved session refers to missing worksheets.")
         except Exception as exc:
-            messagebox.showwarning(
-                "Project save warning",
-                f"Could not save the project session:\n{exc}",
-                parent=self,
+            problem = str(exc)
+            payload = None
+        if payload is not None:
+            answer = messagebox.askyesnocancel(
+                "Resume project",
+                "Resume the saved mappings and tree?\nYes: Resume. No: keep a recovery copy and start fresh. Cancel: keep current work.", parent=self,
             )
+            if answer is None:
+                return None
+            if answer:
+                return payload, token, False
+        else:
+            try:
+                recovered = load_session(backup)
+                if recovered["source"]["sha256"] != fingerprint:
+                    raise ValueError("Backup is for another source revision.")
+                if not (set(recovered["selected"]) | set(recovered["configs"]) | set(recovered["trees"])) <= set(names):
+                    raise ValueError("Backup worksheets do not match.")
+            except Exception:
+                recovered = None
+            if recovered is not None:
+                answer = messagebox.askyesnocancel(
+                    "Session recovery",
+                    f"{problem}\nOpen the previous saved backup?\nYes: recover backup. No: start fresh with a recovery copy. Cancel: keep current work.", parent=self,
+                )
+                if answer is None:
+                    return None
+                if answer:
+                    if token is not None:
+                        archive_session(path, expected_token=token)
+                    return recovered, token, True
+            elif not messagebox.askyesno(
+                "Saved work cannot be resumed",
+                f"{problem}\nKeep a recovery copy and start fresh?\nNo cancels opening; existing work is not replaced.", parent=self,
+            ):
+                return None
+        if token is not None:
+            saved = archive_session(path, expected_token=token)
+            messagebox.showinfo("Previous session preserved", f"Recovery copy:\n{saved}\nKeep the matching original workbook to restore it.", parent=self)
+        return None, token, True
+
+    def _session_payload(self) -> dict:
+        return {
+            "version": SESSION_VERSION, "saved_at": datetime.now(timezone.utc).isoformat(),
+            "source": dict(self._source_info),
+            "selected": {name: var.get() for name, var in self.sheet_vars.items()},
+            "configs": {name: config_to_dict(cfg) for name, cfg in self.configs.items()},
+            "trees": {name: tree_to_dict(tree) for name, tree in self.draft_trees.items()},
+            "tree_ready": sorted(self.tree_ready_sheets), "exported": sorted(self.exported_sheets),
+        }
+
+    def _source_unchanged(self) -> bool:
+        try:
+            if self.input_path is None or workbook_fingerprint(self.input_path) != self._source_info.get("sha256"):
+                raise ValueError("Source workbook changed. Restore the unchanged original to continue this session, or create new work from the revised workbook.")
+        except Exception as exc:
+            messagebox.showwarning("Source unavailable or changed", str(exc), parent=self)
+            return False
+        return True
+
+    def _save_project_session(self) -> bool:
+        if self.input_path is None:
+            return True
+        if self._busy():
+            return False
+        if not self._source_unchanged():
+            return False
+        try:
+            payload = self._session_payload()
+            self._session_token = save_session(session_path_for(self.input_path), payload, expected_token=self._session_token)
+        except Exception as exc:
+            self._session_dirty = True
+            messagebox.showwarning("Project save failed", f"{exc}\nWork remains open and unsaved. Retry Save; closing can save a separate recovery JSON.", parent=self)
+            self.status_label.configure(text="Session not saved — work remains open")
+            return False
+        self._session_dirty = False
+        self.status_label.configure(text="Session saved")
+        return True
 
     def _set_all(self, value: bool) -> None:
+        if self._busy():
+            return
         for name, var in self.sheet_vars.items():
             var.set(value)
             self._refresh_row(name)
         self._update_workflow_ui()
+        self._session_dirty = True
         self._save_project_session()
 
     def toggle_sheet(self, event) -> None:
+        if self._busy():
+            return
         region = self.sheet_tree.identify("region", event.x, event.y)
         column = self.sheet_tree.identify_column(event.x)
         row = self.sheet_tree.identify_row(event.y)
@@ -1604,26 +1730,81 @@ class BOQStudioApp(tk.Tk):
             self.sheet_vars[row].set(not self.sheet_vars[row].get())
             self._refresh_row(row)
             self._update_workflow_ui()
+            self._session_dirty = True
             self._save_project_session()
 
     def configure_selected(self, _event=None) -> None:
+        if self._busy() or not self._source_unchanged():
+            return
         selection = self.sheet_tree.selection()
         if not selection or not self.input_path:
             return
         name = selection[0]
-        dialog = SheetMappingDialog(self, self.input_path, name, self.configs.get(name))
+        previous = self.configs.get(name)
+        dialog = SheetMappingDialog(self, self.input_path, name, copy.deepcopy(previous))
         self.wait_window(dialog)
-        if dialog.result:
-            self.configs[name] = dialog.result
-            self.draft_trees.pop(name, None)
-            self.exported_sheets.discard(name)
-            self.sheet_vars[name].set(True)
-            self._refresh_row(name)
-            self._update_workflow_ui()
-            self._save_project_session()
+        if dialog.result is None or dialog.result == previous:
+            return
+        if not self._source_unchanged():
+            return
+        if name in self.draft_trees:
+            if not messagebox.askyesno(
+                "Mapping changes require a new tree",
+                "This changes the interpretation of source rows. Keep a recovery copy, remove this sheet's tree and approval, and apply the new mapping?\nNo keeps the reviewed tree and mapping.", parent=self,
+            ):
+                return
+            if not self._save_project_session():
+                return
+            try:
+                saved = archive_session(session_path_for(self.input_path), expected_token=self._session_token)
+            except Exception as exc:
+                messagebox.showerror("Cannot preserve reviewed tree", str(exc), parent=self)
+                return
+            messagebox.showinfo("Reviewed tree preserved", f"Previous mapping and tree saved at:\n{saved}", parent=self)
+        self.configs[name] = dialog.result
+        self.draft_trees.pop(name, None)
+        self.tree_ready_sheets.discard(name)
+        self.exported_sheets.discard(name)
+        self.sheet_vars[name].set(True)
+        self._session_dirty = True
+        self._refresh_row(name)
+        self._update_workflow_ui()
+        if self._save_project_session():
+            try:
+                save_template(default_template_path(self.input_path, name), dialog.result)
+            except Exception as exc:
+                messagebox.showwarning("Template not saved", f"Session saved, but mapping template could not be written:\n{exc}", parent=self)
 
+    def _commit_tree(self, name: str, tree: DraftTree, mode: str) -> bool:
+        old_trees = self.draft_trees.copy()
+        old_ready, old_exported = self.tree_ready_sheets.copy(), self.exported_sheets.copy()
+        old_dirty = self._session_dirty
+        self.draft_trees[name] = copy.deepcopy(tree)
+        if mode == "ready":
+            self.tree_ready_sheets.add(name)
+        else:
+            self.tree_ready_sheets.discard(name)
+        self.exported_sheets.discard(name)
+        self._session_dirty = True
+        if not self._save_project_session():
+            candidate_payload = self._session_payload()
+            self.draft_trees = old_trees
+            self.tree_ready_sheets, self.exported_sheets = old_ready, old_exported
+            self._session_dirty = old_dirty
+            if messagebox.askyesno(
+                "Tree remains unsaved",
+                "Keep a separate recovery JSON of this candidate tree?\n"
+                "The editor stays open either way; No lets you retry saving.", parent=self,
+            ):
+                self._write_recovery_copy(candidate_payload)
+            return False
+        self._refresh_row(name)
+        self._update_workflow_ui()
+        return True
 
     def open_draft_tree(self) -> None:
+        if self._busy() or not self._source_unchanged():
+            return
         selection = self.sheet_tree.selection()
         if not selection or not self.input_path:
             messagebox.showwarning("Select sheet", "Select one configured sheet first.", parent=self)
@@ -1633,18 +1814,11 @@ class BOQStudioApp(tk.Tk):
         if cfg is None:
             messagebox.showwarning("Mapping required", "Double-click the sheet and save its column mapping first.", parent=self)
             return
-        dialog = DraftTreeDialog(self, self.input_path, cfg, self.draft_trees.get(name))
+        dialog = DraftTreeDialog(
+            self, self.input_path, cfg, self.draft_trees.get(name),
+            on_commit=lambda tree, mode: self._commit_tree(name, tree, mode),
+        )
         self.wait_window(dialog)
-        if dialog.result is not None:
-            self.draft_trees[name] = dialog.result
-            if dialog.result_mode == "ready":
-                self.tree_ready_sheets.add(name)
-            else:
-                self.tree_ready_sheets.discard(name)
-            self.exported_sheets.discard(name)
-            self._refresh_row(name)
-            self._update_workflow_ui()
-            self._save_project_session()
 
     def _state_for(self, name: str) -> SheetState:
         return sheet_state(
@@ -1687,9 +1861,13 @@ class BOQStudioApp(tk.Tk):
             text = f"Step 3 — Review Draft WBS Tree · {status.summary}"
         else:
             text = f"Step 4 — {status.summary}"
+        if self._session_dirty:
+            text += " · Unsaved session changes"
         self.status_label.configure(text=text)
 
     def run_normalize(self) -> None:
+        if self._busy() or not self._source_unchanged():
+            return
         if not self.input_path:
             return
         selected = self._selected_sheet_names()
@@ -1700,7 +1878,7 @@ class BOQStudioApp(tk.Tk):
         if missing:
             messagebox.showwarning("Mapping required", "Configure every selected sheet first:\n\n" + "\n".join(missing), parent=self)
             return
-        missing_trees = [name for name in selected if name not in self.tree_ready_sheets]
+        missing_trees = [name for name in selected if name not in self.tree_ready_sheets or name not in self.draft_trees]
         if missing_trees:
             messagebox.showwarning(
                 "Draft WBS Tree required",
@@ -1708,6 +1886,9 @@ class BOQStudioApp(tk.Tk):
                 + "\n".join(missing_trees),
                 parent=self,
             )
+            return
+
+        if not self._save_project_session():
             return
 
         desktop = Path.home() / "Desktop"
@@ -1720,9 +1901,10 @@ class BOQStudioApp(tk.Tk):
         request = NormalizeRequest(
             self.input_path,
             output,
-            [self.configs[name] for name in selected],
-            draft_trees={name: self.draft_trees[name] for name in selected if name in self.draft_trees},
+            copy.deepcopy([self.configs[name] for name in selected]),
+            draft_trees=copy.deepcopy({name: self.draft_trees[name] for name in selected}),
         )
+        expected_source = self._source_info["sha256"]
         self.is_running = True
         self._update_workflow_ui()
         self.progress["value"] = 0
@@ -1732,8 +1914,14 @@ class BOQStudioApp(tk.Tk):
             try:
                 def on_progress(done: int, total: int, message: str) -> None:
                     self.events.put(("progress", done, total, message))
-                results = normalize_workbook(request, on_progress)
-                self.events.put(("done", output, results))
+                with tempfile.TemporaryDirectory(prefix="boq-export-") as directory:
+                    snapshot = Path(directory) / request.input_path.name
+                    shutil.copyfile(request.input_path, snapshot)
+                    if workbook_fingerprint(snapshot) != expected_source:
+                        raise ValueError("Source changed before export. No output was published.")
+                    # Read from snapshot but preserve original source provenance in LOG.
+                    results = normalize_workbook(request, on_progress, source_snapshot=snapshot)
+                self.events.put(("done", output, results, tuple(selected)))
             except Exception as exc:
                 self.events.put(("error", str(exc)))
 
@@ -1748,20 +1936,24 @@ class BOQStudioApp(tk.Tk):
                     self.progress["value"] = (done / max(1, total)) * 100
                     self.status_label.configure(text=message)
                 elif event[0] == "done":
-                    _, output, results = event
+                    _, output, results, exported_selection = event
                     self.progress["value"] = 100
                     ok = sum(1 for r in results if r.status == "OK")
                     warning = sum(1 for r in results if r.status == "WARNING")
                     error = sum(1 for r in results if r.status == "ERROR")
                     self.status_label.configure(text=f"Finished — OK {ok}, Warning {warning}, Error {error}")
-                    self.exported_sheets.update(self._selected_sheet_names())
-                    for name in self.exported_sheets:
+                    self.exported_sheets.difference_update(exported_selection)
+                    self.exported_sheets.update(r.sheet_name for r in results if r.status == "OK" and r.sheet_name in exported_selection)
+                    self._session_dirty = True
+                    for name in exported_selection:
                         if name in self.sheet_vars:
                             self._refresh_row(name)
                     self.is_running = False
                     self._update_workflow_ui()
-                    self._save_project_session()
-                    messagebox.showinfo("BOQ Studio finished", f"Output created:\n{output}\n\nOK: {ok}\nWarnings: {warning}\nErrors: {error}", parent=self)
+                    saved = self._save_project_session()
+                    if not saved:
+                        self.status_label.configure(text="Excel exported — session status NOT saved")
+                    messagebox.showinfo("BOQ Studio finished", f"Output created:\n{output}\n\nOK: {ok}\nWarnings: {warning}\nErrors: {error}\nSession status: {'saved' if saved else 'NOT saved; work remains open'}", parent=self)
                 elif event[0] == "error":
                     self.is_running = False
                     self.status_label.configure(text="Failed")

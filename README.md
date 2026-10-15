@@ -162,3 +162,7 @@ pytest
 ```
 
 The `.venv` directory is local to each computer and is intentionally excluded from Git and release ZIP files.
+
+## S0 persistence safety
+
+See [S0 session safety and recovery](docs/milestones/S0_PERSISTENCE_SAFETY.md) for Save/Resume/Discard behavior, local recovery files, and desktop acceptance steps. S0 retains the existing session format; portable Project storage is not included.

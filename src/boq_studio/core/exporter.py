@@ -263,8 +263,11 @@ def normalized_preview_rows(source_ws, cfg: SheetConfig, limit: int = 60) -> lis
     return rows
 
 
-def normalize_workbook(request: NormalizeRequest, progress: ProgressCallback | None = None) -> list[SheetResult]:
-    source_wb = load_workbook(request.input_path, data_only=True, read_only=False)
+def normalize_workbook(
+    request: NormalizeRequest, progress: ProgressCallback | None = None, *,
+    source_snapshot: Path | None = None,
+) -> list[SheetResult]:
+    source_wb = load_workbook(source_snapshot or request.input_path, data_only=True, read_only=False)
     output_wb = Workbook()
     output_wb.remove(output_wb.active)
     results: list[SheetResult] = []
